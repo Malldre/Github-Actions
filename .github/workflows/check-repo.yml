@@ -1,6 +1,5 @@
 on:
-  push:       
-  workflow_dispatch:
+  workflow_call:
 
 jobs:
   check-repo:
@@ -11,3 +10,4 @@ jobs:
         run: |
           echo "This workflow should not run in the Malldre/Github-Actions repository."
           exit 1
+ 
