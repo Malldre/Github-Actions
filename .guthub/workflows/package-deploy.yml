@@ -1,0 +1,35 @@
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  check-repo:
+    uses: ./.github/workflows/check-repo.yml
+
+  build:
+    runs-on: ubuntu-latest
+    needs: check-repo
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          registry-url: 'https://npm.pkg.github.com/'
+          node-version: '22.xx'
+          scope: '@Malldre'
+
+      - name: Install dependencies
+        run: npm install
+      
+      - name: Build packages
+        run: npm run build
+
+      - name: Publish packages
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

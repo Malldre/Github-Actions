@@ -1,0 +1,13 @@
+on:
+  push:       
+  workflow_dispatch:
+
+jobs:
+  check-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if repository is Malldre/Github-Actions
+        if: github.repository == 'Malldre/Github-Actions'
+        run: |
+          echo "This workflow should not run in the Malldre/Github-Actions repository."
+          exit 1
