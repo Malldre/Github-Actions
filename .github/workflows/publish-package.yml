@@ -30,6 +30,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Configure .npmrc
+        run: |
+          echo "@Malldre:registry=https://npm.pkg.github.com/" > ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.TOKEN }}" >> ~/.npmrc
+
       - name: Build packages
         run: npm run build
 
