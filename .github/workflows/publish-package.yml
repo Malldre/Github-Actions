@@ -5,6 +5,10 @@ on:
 
   workflow_call:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   check-repo:
     uses: ./.github/workflows/check-repo.yml
@@ -32,4 +36,4 @@ jobs:
       - name: Publish packages
         run: npm publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.TOKEN }}
