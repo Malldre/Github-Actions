@@ -23,12 +23,3 @@ jobs:
       env:
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
       run: npx drizzle-kit generate
-
-    - name: Zip Lambda Layer
-      run: zip -r orm-layer.zip ./orm-layer
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: orm-layer
-        path: orm-layer.zip
