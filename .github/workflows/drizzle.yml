@@ -19,8 +19,8 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
-    - name: echo
-      run: 'echo: ${{ secrets.DATABASE_URL }}'
+    - name: test
+      run: echo "${{ secrets.DATABASE_URL }}"
 
     - name: Generate Drizzle Client
       env:
