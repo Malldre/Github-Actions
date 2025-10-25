@@ -32,6 +32,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Download Lambda artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-packages
+          path: lambdas/output
+          
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
