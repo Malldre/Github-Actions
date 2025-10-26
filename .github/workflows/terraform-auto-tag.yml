@@ -1,0 +1,217 @@
+name: "Auto-Tag Terraform Resources"
+
+on:
+    workflow_call:
+        inputs:
+            environment:
+                description: "Target environment"
+                required: true
+                type: string
+            working-directory:
+                description: "Working directory for Terraform files"
+                required: false
+                type: string
+                default: "infra"
+            additional-tags:
+                description: "Additional custom tags (JSON format)"
+                required: false
+                type: string
+                default: "{}"
+            create-pr:
+                description: "Create PR with changes"
+                required: false
+                type: boolean
+                default: true
+
+permissions:
+    contents: write
+    pull-requests: write
+
+jobs:
+    auto-tag:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Auto-Tag Resources
+              id: auto-tag
+              run: |
+                  echo "🏷️ Auto-tagging Terraform resources..."
+
+                  # Default tags
+                  REPO_NAME="${{ github.repository }}"
+                  REPO_SHORT="${REPO_NAME#*/}"
+                  ENVIRONMENT="${{ inputs.environment }}"
+
+                  cat > /tmp/auto_tag.py << 'PYTHON_SCRIPT'
+                  import os
+                  import re
+                  import json
+                  import sys
+                  from pathlib import Path
+
+                  def parse_additional_tags(tags_json):
+                      try:
+                          return json.loads(tags_json)
+                      except:
+                          return {}
+
+                  def get_default_tags(repo, env, additional):
+                      tags = {
+                          "Environment": env,
+                          "ManagedBy": "Terraform",
+                          "Repository": repo,
+                          "CreatedBy": "GitHub-Actions"
+                      }
+                      tags.update(additional)
+                      return tags
+
+                  def format_tags_block(tags, indent=2):
+                      spaces = " " * indent
+                      lines = [f"{spaces}tags = {{"]
+                      for key, value in sorted(tags.items()):
+                          lines.append(f'{spaces}  {key:<15} = "{value}"')
+                      lines.append(f"{spaces}}}")
+                      return "\n".join(lines)
+
+                  def process_terraform_file(file_path, default_tags):
+                      with open(file_path, 'r') as f:
+                          content = f.read()
+                      
+                      original_content = content
+                      modified = False
+                      
+                      # Pattern to match resource blocks
+                      resource_pattern = r'(resource\s+"[^"]+"\s+"[^"]+"\s+\{[^}]*?)(\})'
+                      
+                      def add_tags_to_resource(match):
+                          nonlocal modified
+                          resource_block = match.group(1)
+                          closing_brace = match.group(2)
+                          
+                          # Check if tags already exist
+                          if 'tags' not in resource_block or 'tags =' not in resource_block:
+                              # Add tags before closing brace
+                              tags_block = format_tags_block(default_tags, indent=2)
+                              modified = True
+                              return f"{resource_block}\n\n{tags_block}\n{closing_brace}"
+                          
+                          return match.group(0)
+                      
+                      # Process all resources
+                      new_content = re.sub(resource_pattern, add_tags_to_resource, content, flags=re.DOTALL)
+                      
+                      if modified:
+                          with open(file_path, 'w') as f:
+                              f.write(new_content)
+                          return True
+                      
+                      return False
+
+                  def main():
+                      repo = sys.argv[1]
+                      env = sys.argv[2]
+                      working_dir = sys.argv[3]
+                      additional_json = sys.argv[4] if len(sys.argv) > 4 else "{}"
+                      
+                      additional = parse_additional_tags(additional_json)
+                      default_tags = get_default_tags(repo, env, additional)
+                      
+                      print(f"Default tags: {json.dumps(default_tags, indent=2)}")
+                      
+                      files_modified = []
+                      tf_dir = Path(working_dir)
+                      
+                      for tf_file in tf_dir.rglob("*.tf"):
+                          if process_terraform_file(tf_file, default_tags):
+                              files_modified.append(str(tf_file))
+                              print(f"✅ Tagged: {tf_file}")
+                      
+                      print(f"\nModified {len(files_modified)} files")
+                      
+                      with open("/tmp/modified_files.txt", "w") as f:
+                          f.write("\n".join(files_modified))
+                      
+                      return len(files_modified)
+
+                  if __name__ == "__main__":
+                      count = main()
+                      sys.exit(0 if count >= 0 else 1)
+                  PYTHON_SCRIPT
+
+                  # Run the script
+                  python /tmp/auto_tag.py \
+                    "$REPO_SHORT" \
+                    "$ENVIRONMENT" \
+                    "${{ inputs.working-directory }}" \
+                    '${{ inputs.additional-tags }}'
+
+                  MODIFIED_COUNT=$(wc -l < /tmp/modified_files.txt 2>/dev/null || echo "0")
+                  echo "modified-count=$MODIFIED_COUNT" >> $GITHUB_OUTPUT
+
+                  if [ "$MODIFIED_COUNT" -gt 0 ]; then
+                    echo "✅ Auto-tagged $MODIFIED_COUNT files"
+                    echo "## 🏷️ Auto-Tagging Report" >> $GITHUB_STEP_SUMMARY
+                    echo "" >> $GITHUB_STEP_SUMMARY
+                    echo "**Files Modified:** $MODIFIED_COUNT" >> $GITHUB_STEP_SUMMARY
+                    echo "" >> $GITHUB_STEP_SUMMARY
+                    echo "**Modified Files:**" >> $GITHUB_STEP_SUMMARY
+                    echo '```' >> $GITHUB_STEP_SUMMARY
+                    cat /tmp/modified_files.txt >> $GITHUB_STEP_SUMMARY
+                    echo '```' >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "ℹ️ No files needed tagging"
+                  fi
+
+            - name: Format Terraform Files
+              if: steps.auto-tag.outputs.modified-count > 0
+              run: |
+                  cd ${{ inputs.working-directory }}
+                  terraform fmt -recursive || true
+
+            - name: Create Pull Request
+              if: steps.auto-tag.outputs.modified-count > 0 && inputs.create-pr == true
+              uses: peter-evans/create-pull-request@v6
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  commit-message: "chore: auto-tag terraform resources for ${{ inputs.environment }}"
+                  title: "🏷️ Auto-tag Terraform resources for ${{ inputs.environment }}"
+                  body: |
+                      ## Auto-Tagging Report
+
+                      This PR automatically adds tags to Terraform resources for the **${{ inputs.environment }}** environment.
+
+                      ### Tags Added:
+                      - **Environment**: ${{ inputs.environment }}
+                      - **ManagedBy**: Terraform
+                      - **Repository**: ${{ github.repository }}
+                      - **CreatedBy**: GitHub-Actions
+
+                      ### Files Modified: ${{ steps.auto-tag.outputs.modified-count }}
+
+                      All resources now have consistent tagging for better resource management and cost tracking.
+                  branch: auto-tag/${{ inputs.environment }}-${{ github.run_number }}
+                  delete-branch: true
+                  labels: |
+                      terraform
+                      auto-tag
+                      chore
+
+            - name: Commit Changes Directly
+              if: steps.auto-tag.outputs.modified-count > 0 && inputs.create-pr == false
+              run: |
+                  git config --local user.email "github-actions[bot]@users.noreply.github.com"
+                  git config --local user.name "github-actions[bot]"
+                  git add ${{ inputs.working-directory }}
+                  git commit -m "chore: auto-tag terraform resources for ${{ inputs.environment }}"
+                  git push

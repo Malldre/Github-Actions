@@ -1,0 +1,252 @@
+name: "Terraform Apply"
+
+on:
+    workflow_call:
+        inputs:
+            environment:
+                description: "Target environment (DEV, QUAL, PROD)"
+                required: true
+                type: string
+            terraform-version:
+                description: "Terraform version"
+                required: false
+                type: string
+                default: "1.8.3"
+            working-directory:
+                description: "Working directory for Terraform files"
+                required: false
+                type: string
+                default: "infra"
+            download-artifacts:
+                description: "Download artifacts before apply"
+                required: false
+                type: boolean
+                default: false
+            artifacts-name:
+                description: "Name of artifacts to download"
+                required: false
+                type: string
+                default: "lambda-packages"
+            artifacts-path:
+                description: "Path to download artifacts"
+                required: false
+                type: string
+                default: "lambdas/output"
+            validate-tags:
+                description: "Validate resource tags before apply"
+                required: false
+                type: boolean
+                default: true
+            required-tags:
+                description: "Required tags for validation (comma-separated)"
+                required: false
+                type: string
+                default: "Environment,ManagedBy,Repository"
+            fail-on-missing-tags:
+                description: "Fail if resources missing required tags"
+                required: false
+                type: boolean
+                default: false
+            auto-tag-resources:
+                description: "Automatically add tags to resources if missing"
+                required: false
+                type: boolean
+                default: true
+            additional-tags:
+                description: "Additional custom tags (JSON format)"
+                required: false
+                type: string
+                default: "{}"
+        secrets:
+            AWS_ROLE_ARN:
+                description: "AWS IAM role ARN for OIDC"
+                required: true
+            AWS_REGION:
+                description: "AWS region"
+                required: true
+            TF_STATE_BUCKET:
+                description: "S3 bucket for Terraform state"
+                required: true
+            TF_LOCK_TABLE:
+                description: "DynamoDB table for state locking"
+                required: true
+
+permissions:
+    id-token: write
+    contents: read
+    pull-requests: write
+
+jobs:
+    validate-tags:
+        if: inputs.validate-tags == true
+        uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
+        with:
+            environment: ${{ inputs.environment }}
+            working-directory: ${{ inputs.working-directory }}
+            required-tags: ${{ inputs.required-tags }}
+            fail-on-missing: false
+
+    auto-tag:
+        needs: [validate-tags]
+        if: |
+            always() && 
+            inputs.auto-tag-resources == true && 
+            (needs.validate-tags.result == 'success' && needs.validate-tags.outputs.validation-passed == 'false' ||
+             needs.validate-tags.result == 'skipped')
+        uses: Malldre/Github-Actions/.github/workflows/terraform-auto-tag.yml@main
+        with:
+            environment: ${{ inputs.environment }}
+            working-directory: ${{ inputs.working-directory }}
+            additional-tags: ${{ inputs.additional-tags }}
+            create-pr: false
+
+    validate-tags-after-auto-tag:
+        needs: [auto-tag]
+        if: always() && needs.auto-tag.result == 'success'
+        uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
+        with:
+            environment: ${{ inputs.environment }}
+            working-directory: ${{ inputs.working-directory }}
+            required-tags: ${{ inputs.required-tags }}
+            fail-on-missing: ${{ inputs.fail-on-missing-tags }}
+
+    apply:
+        needs: [validate-tags, auto-tag, validate-tags-after-auto-tag]
+        if: |
+            always() && 
+            (
+                (needs.validate-tags.result == 'success' && needs.validate-tags.outputs.validation-passed == 'true') ||
+                (needs.validate-tags-after-auto-tag.result == 'success' && needs.validate-tags-after-auto-tag.outputs.validation-passed == 'true') ||
+                (needs.validate-tags.result == 'skipped' && needs.auto-tag.result == 'skipped')
+            )
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            AWS_REGION: ${{ secrets.AWS_REGION }}
+            TF_IN_AUTOMATION: true
+            TF_INPUT: false
+        defaults:
+            run:
+                shell: bash
+                working-directory: ${{ inputs.working-directory }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Download artifacts
+              if: inputs.download-artifacts == true
+              uses: actions/download-artifact@v4
+              with:
+                  name: ${{ inputs.artifacts-name }}
+                  path: ${{ inputs.artifacts-path }}
+              continue-on-error: true
+              id: download-artifacts
+
+            - name: Verify artifacts
+              if: inputs.download-artifacts == true && steps.download-artifacts.outcome == 'success'
+              run: |
+                  if [ -d "../${{ inputs.artifacts-path }}" ]; then
+                    echo "✅ Artifacts downloaded"
+                    ls -lah ../${{ inputs.artifacts-path }}
+                  fi
+
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: ${{ inputs.terraform-version }}
+
+            - name: Cache Terraform providers
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ${{ inputs.working-directory }}/.terraform
+                      ${{ inputs.working-directory }}/.terraform.lock.hcl
+                  key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working-directory)) }}
+                  restore-keys: |
+                      terraform-${{ runner.os }}-
+
+            - name: Configure AWS Credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+                  role-session-name: Github_to_AWS_via_FederatedOIDC
+                  aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Verify AWS credentials
+              run: |
+                  echo "🔐 Verifying AWS credentials..."
+                  aws sts get-caller-identity
+                  echo "✅ Credentials valid"
+
+            - name: Terraform Init
+              run: |
+                  echo "🔄 Initializing Terraform..."
+                  terraform init \
+                    -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+                    -backend-config="key=${{ github.event.repository.name }}" \
+                    -backend-config="region=${{ secrets.AWS_REGION }}" \
+                    -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+                  echo "✅ Initialized"
+
+            - name: Select or Create Workspace
+              run: |
+                  echo "🔄 Workspace: ${{ inputs.environment }}"
+                  terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }}
+                  echo "✅ Using: $(terraform workspace show)"
+
+            - name: Terraform Plan
+              id: plan
+              run: |
+                  echo "📋 Planning changes..."
+                  terraform plan \
+                    -var-file="./envs/${{ inputs.environment }}/terraform.tfvars" \
+                    -out="${{ inputs.environment }}.plan" \
+                    -no-color
+                  echo "✅ Plan complete"
+
+            - name: Terraform Apply
+              id: apply
+              run: |
+                  echo "🚀 Applying infrastructure..."
+                  terraform apply "${{ inputs.environment }}.plan"
+                  echo "✅ Applied successfully"
+
+            - name: Terraform Outputs
+              if: steps.apply.outcome == 'success'
+              id: outputs
+              run: |
+                  echo "📊 Collecting outputs..."
+                  terraform output -json > outputs.json
+                  cat outputs.json
+
+            - name: Upload Outputs
+              if: steps.apply.outcome == 'success'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: terraform-outputs-${{ inputs.environment }}
+                  path: ${{ inputs.working-directory }}/outputs.json
+                  retention-days: 30
+
+            - name: Apply Summary
+              if: always()
+              run: |
+                  echo "## 🚀 Terraform Apply" >> $GITHUB_STEP_SUMMARY
+                  echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Region:** ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Status:** ${{ steps.apply.outcome }}" >> $GITHUB_STEP_SUMMARY
+
+                  if [ "${{ inputs.validate-tags }}" == "true" ]; then
+                    echo "" >> $GITHUB_STEP_SUMMARY
+                    echo "### 🏷️ Tag Management" >> $GITHUB_STEP_SUMMARY
+                    echo "**Tag Validation:** ✅ Enabled" >> $GITHUB_STEP_SUMMARY
+                    
+                    if [ "${{ needs.auto-tag.result }}" == "success" ]; then
+                      echo "**Auto-Tag:** ✅ Tags added automatically" >> $GITHUB_STEP_SUMMARY
+                    elif [ "${{ needs.auto-tag.result }}" == "skipped" ]; then
+                      echo "**Auto-Tag:** ⏭️ Skipped (all resources already tagged)" >> $GITHUB_STEP_SUMMARY
+                    fi
+                  fi
+
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY

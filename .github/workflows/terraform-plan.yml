@@ -1,0 +1,130 @@
+name: "Terraform Plan"
+
+on:
+    workflow_call:
+        inputs:
+            environment:
+                description: "Target environment (DEV, QUAL, PROD)"
+                required: true
+                type: string
+            terraform-version:
+                description: "Terraform version"
+                required: false
+                type: string
+                default: "1.8.3"
+            working-directory:
+                description: "Working directory for Terraform files"
+                required: false
+                type: string
+                default: "infra"
+        secrets:
+            AWS_ROLE_ARN:
+                description: "AWS IAM role ARN for OIDC"
+                required: true
+            AWS_REGION:
+                description: "AWS region"
+                required: true
+            TF_STATE_BUCKET:
+                description: "S3 bucket for Terraform state"
+                required: true
+            TF_LOCK_TABLE:
+                description: "DynamoDB table for state locking"
+                required: true
+
+permissions:
+    id-token: write
+    contents: read
+
+jobs:
+    plan:
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        env:
+            AWS_REGION: ${{ secrets.AWS_REGION }}
+            TF_IN_AUTOMATION: true
+            TF_INPUT: false
+        defaults:
+            run:
+                shell: bash
+                working-directory: ${{ inputs.working-directory }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: ${{ inputs.terraform-version }}
+
+            - name: Cache Terraform providers
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ${{ inputs.working-directory }}/.terraform
+                      ${{ inputs.working-directory }}/.terraform.lock.hcl
+                  key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working-directory)) }}
+                  restore-keys: |
+                      terraform-${{ runner.os }}-
+
+            - name: Configure AWS Credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+                  role-session-name: Github_to_AWS_via_FederatedOIDC
+                  aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Verify AWS credentials
+              run: |
+                  echo "🔐 Verifying AWS credentials..."
+                  aws sts get-caller-identity
+                  echo "✅ Credentials valid"
+
+            - name: Terraform Init
+              run: |
+                  echo "🔄 Initializing Terraform..."
+                  terraform init \
+                    -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+                    -backend-config="key=${{ github.event.repository.name }}" \
+                    -backend-config="region=${{ secrets.AWS_REGION }}" \
+                    -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+                  echo "✅ Initialized"
+
+            - name: Select or Create Workspace
+              run: |
+                  echo "🔄 Workspace: ${{ inputs.environment }}"
+                  terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }}
+                  echo "✅ Using: $(terraform workspace show)"
+
+            - name: Terraform Validate
+              run: |
+                  echo "🔍 Validating..."
+                  terraform validate
+                  echo "✅ Valid"
+
+            - name: Terraform Format Check
+              run: terraform fmt -check -recursive || echo "⚠️ Format issues"
+
+            - name: Terraform Plan
+              run: |
+                  echo "📋 Planning changes..."
+                  terraform plan \
+                    -var-file="./envs/${{ inputs.environment }}/terraform.tfvars" \
+                    -out="${{ inputs.environment }}.plan" \
+                    -no-color
+                  echo "✅ Plan complete"
+
+            - name: Upload Plan
+              uses: actions/upload-artifact@v4
+              with:
+                  name: terraform-plan-${{ inputs.environment }}
+                  path: ${{ inputs.working-directory }}/${{ inputs.environment }}.plan
+                  retention-days: 5
+
+            - name: Plan Summary
+              if: always()
+              run: |
+                  echo "## 📋 Terraform Plan" >> $GITHUB_STEP_SUMMARY
+                  echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Region:** ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Workspace:** $(terraform workspace show)" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,156 @@
+name: "Terraform Tag Validation"
+
+on:
+    workflow_call:
+        inputs:
+            environment:
+                description: "Target environment"
+                required: true
+                type: string
+            working-directory:
+                description: "Working directory for Terraform files"
+                required: false
+                type: string
+                default: "infra"
+            required-tags:
+                description: "Required tags (comma-separated)"
+                required: false
+                type: string
+                default: "Environment,ManagedBy,Repository"
+            fail-on-missing:
+                description: "Fail if resources missing tags"
+                required: false
+                type: boolean
+                default: false
+        outputs:
+            validation-passed:
+                description: "Whether validation passed"
+                value: ${{ jobs.validate.outputs.passed }}
+            resources-without-tags:
+                description: "Count of resources without required tags"
+                value: ${{ jobs.validate.outputs.missing-count }}
+
+permissions:
+    contents: read
+
+jobs:
+    validate:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        outputs:
+            passed: ${{ steps.validate.outputs.passed }}
+            missing-count: ${{ steps.validate.outputs.missing-count }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Validate Terraform Tags
+              id: validate
+              run: |
+                  echo "🔍 Validating Terraform resource tags..."
+
+                  REQUIRED_TAGS="${{ inputs.required-tags }}"
+                  IFS=',' read -ra TAGS <<< "$REQUIRED_TAGS"
+
+                  MISSING_TAGS=0
+                  RESOURCES_CHECKED=0
+
+                  # Find all .tf files
+                  find ${{ inputs.working-directory }} -name "*.tf" -type f > /tmp/tf_files.txt
+
+                  echo "📋 Checking resources in:"
+                  cat /tmp/tf_files.txt
+                  echo ""
+
+                  # Create report
+                  echo "## 🏷️ Tag Validation Report" > /tmp/tag_report.md
+                  echo "" >> /tmp/tag_report.md
+                  echo "**Environment:** ${{ inputs.environment }}" >> /tmp/tag_report.md
+                  echo "**Required Tags:** $REQUIRED_TAGS" >> /tmp/tag_report.md
+                  echo "" >> /tmp/tag_report.md
+
+                  # Check each terraform file for resources
+                  while read -r tf_file; do
+                    # Extract resource blocks with tags
+                    if grep -q "resource\s*\"" "$tf_file"; then
+                      echo "Checking: $tf_file"
+                      
+                      # Simple check for tags block presence
+                      awk '/resource\s+"[^"]+"\s+"[^"]+"/ {
+                        resource_type=$2
+                        resource_name=$3
+                        in_resource=1
+                        has_tags=0
+                        tags_content=""
+                      }
+                      in_resource && /tags\s*=\s*{/ {
+                        has_tags=1
+                        in_tags=1
+                      }
+                      in_tags {
+                        tags_content = tags_content $0 "\n"
+                      }
+                      in_tags && /}/ {
+                        in_tags=0
+                      }
+                      in_resource && /^}/ {
+                        if (has_tags == 0) {
+                          print "MISSING_TAGS:" resource_type "." resource_name " in " FILENAME
+                        }
+                        in_resource=0
+                      }' "$tf_file" >> /tmp/validation_issues.txt
+                      
+                      RESOURCES_CHECKED=$((RESOURCES_CHECKED + 1))
+                    fi
+                  done < /tmp/tf_files.txt
+
+                  # Count issues
+                  if [ -f /tmp/validation_issues.txt ]; then
+                    MISSING_TAGS=$(grep -c "MISSING_TAGS:" /tmp/validation_issues.txt 2>/dev/null || echo "0")
+                    
+                    if [ "$MISSING_TAGS" -gt 0 ]; then
+                      echo "### ⚠️ Resources Without Tags" >> /tmp/tag_report.md
+                      echo "" >> /tmp/tag_report.md
+                      echo '```' >> /tmp/tag_report.md
+                      grep "MISSING_TAGS:" /tmp/validation_issues.txt | sed 's/MISSING_TAGS://' >> /tmp/tag_report.md
+                      echo '```' >> /tmp/tag_report.md
+                    fi
+                  else
+                    MISSING_TAGS=0
+                  fi
+
+                  echo "" >> /tmp/tag_report.md
+                  echo "**Resources Checked:** $RESOURCES_CHECKED" >> /tmp/tag_report.md
+                  echo "**Resources Missing Tags:** $MISSING_TAGS" >> /tmp/tag_report.md
+
+                  # Output results
+                  echo "missing-count=$MISSING_TAGS" >> $GITHUB_OUTPUT
+
+                  if [ "$MISSING_TAGS" -eq 0 ]; then
+                    echo "passed=true" >> $GITHUB_OUTPUT
+                    echo "✅ All resources have tags!" >> /tmp/tag_report.md
+                    echo "✅ Tag validation passed"
+                  else
+                    echo "passed=false" >> $GITHUB_OUTPUT
+                    echo "" >> /tmp/tag_report.md
+                    echo "⚠️ Found $MISSING_TAGS resources without proper tags" >> /tmp/tag_report.md
+                    echo "⚠️ Warning: $MISSING_TAGS resources missing tags"
+                    
+                    if [ "${{ inputs.fail-on-missing }}" == "true" ]; then
+                      echo "❌ Failing due to missing tags"
+                      cat /tmp/tag_report.md >> $GITHUB_STEP_SUMMARY
+                      exit 1
+                    fi
+                  fi
+
+                  # Add to summary
+                  cat /tmp/tag_report.md >> $GITHUB_STEP_SUMMARY
+
+            - name: Upload Validation Report
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: tag-validation-report-${{ inputs.environment }}
+                  path: /tmp/tag_report.md
+                  retention-days: 30

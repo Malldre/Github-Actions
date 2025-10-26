@@ -1,0 +1,285 @@
+name: "Terraform Destroy"
+
+on:
+    workflow_call:
+        inputs:
+            environment:
+                description: "Target environment to destroy (DEV, QUAL, PROD)"
+                required: true
+                type: string
+            terraform-version:
+                description: "Terraform version"
+                required: false
+                type: string
+                default: "1.8.3"
+            working-directory:
+                description: "Working directory for Terraform files"
+                required: false
+                type: string
+                default: "infra"
+            auto-approve:
+                description: "Auto approve destroy (use with caution)"
+                required: false
+                type: boolean
+                default: true
+            destroy-by-tags:
+                description: "Destroy only resources matching tags (JSON format)"
+                required: false
+                type: string
+                default: ""
+            target-resources:
+                description: "Specific resources to destroy (comma-separated)"
+                required: false
+                type: string
+                default: ""
+            dry-run:
+                description: "Only show what would be destroyed (plan only)"
+                required: false
+                type: boolean
+                default: false
+        secrets:
+            AWS_ROLE_ARN:
+                description: "AWS IAM role ARN for OIDC"
+                required: true
+            AWS_REGION:
+                description: "AWS region"
+                required: true
+            TF_STATE_BUCKET:
+                description: "S3 bucket for Terraform state"
+                required: true
+            TF_LOCK_TABLE:
+                description: "DynamoDB table for state locking"
+                required: true
+
+permissions:
+    id-token: write
+    contents: read
+
+jobs:
+    destroy:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            AWS_REGION: ${{ secrets.AWS_REGION }}
+            TF_IN_AUTOMATION: true
+            TF_INPUT: false
+        defaults:
+            run:
+                shell: bash
+                working-directory: ${{ inputs.working-directory }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: ${{ inputs.terraform-version }}
+
+            - name: Cache Terraform providers
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ${{ inputs.working-directory }}/.terraform
+                      ${{ inputs.working-directory }}/.terraform.lock.hcl
+                  key: terraform-${{ runner.os }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working-directory)) }}
+                  restore-keys: |
+                      terraform-${{ runner.os }}-
+
+            - name: Configure AWS Credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+                  role-session-name: Github_to_AWS_via_FederatedOIDC
+                  aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Verify AWS credentials
+              run: |
+                  echo "🔐 Verifying AWS credentials..."
+                  aws sts get-caller-identity
+                  echo "✅ Credentials valid"
+
+            - name: Terraform Init
+              run: |
+                  echo "🔄 Initializing Terraform..."
+                  terraform init \
+                    -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+                    -backend-config="key=${{ github.event.repository.name }}" \
+                    -backend-config="region=${{ secrets.AWS_REGION }}" \
+                    -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+                  echo "✅ Initialized"
+
+            - name: Select Workspace
+              run: |
+                  echo "🔄 Workspace: ${{ inputs.environment }}"
+                  terraform workspace select ${{ inputs.environment }}
+                  echo "✅ Using: $(terraform workspace show)"
+
+            - name: List Resources with Tags
+              if: inputs.destroy-by-tags != ''
+              id: list-resources
+              run: |
+                  echo "🔍 Listing resources matching tags..."
+                  echo '${{ inputs.destroy-by-tags }}' > /tmp/tags.json
+
+                  # Get all resources from state
+                  terraform state list > /tmp/all_resources.txt
+
+                  # Parse tags (example: {"Environment":"staging","Type":"temp"})
+                  echo "Resources to be evaluated:"
+                  cat /tmp/all_resources.txt
+
+                  # Create list of resources matching tags
+                  echo "" > /tmp/target_resources.txt
+
+                  while read -r resource; do
+                    # Get resource details
+                    RESOURCE_INFO=$(terraform state show "$resource" 2>/dev/null || echo "")
+                    
+                    if [ ! -z "$RESOURCE_INFO" ]; then
+                      # Check if resource has matching tags
+                      MATCHES=true
+                      
+                      while IFS="=" read -r key value; do
+                        # Remove quotes and whitespace
+                        key=$(echo "$key" | tr -d '"' | xargs)
+                        value=$(echo "$value" | tr -d '"' | xargs)
+                        
+                        if ! echo "$RESOURCE_INFO" | grep -q "$key.*=.*$value"; then
+                          MATCHES=false
+                          break
+                        fi
+                      done < <(jq -r 'to_entries | .[] | "\(.key)=\(.value)"' /tmp/tags.json)
+                      
+                      if [ "$MATCHES" = true ]; then
+                        echo "$resource" >> /tmp/target_resources.txt
+                        echo "  ✓ $resource"
+                      fi
+                    fi
+                  done < /tmp/all_resources.txt
+
+                  RESOURCE_COUNT=$(wc -l < /tmp/target_resources.txt)
+                  echo "resource_count=$RESOURCE_COUNT" >> $GITHUB_OUTPUT
+
+                  if [ "$RESOURCE_COUNT" -eq 0 ]; then
+                    echo "⚠️ No resources found matching tags"
+                  else
+                    echo "� Found $RESOURCE_COUNT resources matching tags"
+                  fi
+
+            - name: Build Destroy Command
+              id: build-command
+              run: |
+                  DESTROY_CMD="terraform destroy -var-file=\"./envs/${{ inputs.environment }}/terraform.tfvars\""
+
+                  # Add target resources from tags
+                  if [ -f /tmp/target_resources.txt ] && [ "${{ inputs.destroy-by-tags }}" != "" ]; then
+                    while read -r resource; do
+                      if [ ! -z "$resource" ]; then
+                        DESTROY_CMD="$DESTROY_CMD -target=\"$resource\""
+                      fi
+                    done < /tmp/target_resources.txt
+                  fi
+
+                  # Add specific target resources
+                  if [ "${{ inputs.target-resources }}" != "" ]; then
+                    IFS=',' read -ra TARGETS <<< "${{ inputs.target-resources }}"
+                    for target in "${TARGETS[@]}"; do
+                      target=$(echo "$target" | xargs)  # trim whitespace
+                      DESTROY_CMD="$DESTROY_CMD -target=\"$target\""
+                    done
+                  fi
+
+                  # Add auto-approve flag
+                  if [ "${{ inputs.auto-approve }}" == "true" ] && [ "${{ inputs.dry-run }}" != "true" ]; then
+                    DESTROY_CMD="$DESTROY_CMD -auto-approve"
+                  fi
+
+                  echo "destroy_command=$DESTROY_CMD" >> $GITHUB_OUTPUT
+                  echo "📝 Destroy command: $DESTROY_CMD"
+
+            - name: Terraform Destroy (Dry Run)
+              if: inputs.dry-run == true
+              id: destroy-dry-run
+              run: |
+                  echo "🔍 DRY RUN - Showing what would be destroyed..."
+                  terraform plan -destroy \
+                    -var-file="./envs/${{ inputs.environment }}/terraform.tfvars" \
+                    $(if [ -f /tmp/target_resources.txt ]; then while read r; do echo "-target=\"$r\""; done < /tmp/target_resources.txt; fi) \
+                    $(if [ "${{ inputs.target-resources }}" != "" ]; then IFS=',' read -ra T <<< "${{ inputs.target-resources }}"; for t in "${T[@]}"; do echo "-target=\"$(echo $t | xargs)\""; done; fi)
+                  echo "✅ Dry run complete - no resources were destroyed"
+
+            - name: Terraform Destroy
+              if: inputs.dry-run != true
+              id: destroy
+              run: |
+                  echo "🗑️ Destroying infrastructure: ${{ inputs.environment }}"
+
+                  if [ "${{ inputs.destroy-by-tags }}" != "" ]; then
+                    echo "🏷️ Filtering by tags: ${{ inputs.destroy-by-tags }}"
+                    RESOURCE_COUNT=$(cat /tmp/target_resources.txt | wc -l)
+                    if [ "$RESOURCE_COUNT" -eq 0 ]; then
+                      echo "⚠️ No resources to destroy"
+                      exit 0
+                    fi
+                    echo "📋 Destroying $RESOURCE_COUNT tagged resources"
+                  fi
+
+                  if [ "${{ inputs.target-resources }}" != "" ]; then
+                    echo "🎯 Targeting specific resources: ${{ inputs.target-resources }}"
+                  fi
+
+                  # Execute destroy command
+                  eval ${{ steps.build-command.outputs.destroy_command }}
+
+                  echo "✅ Destroyed successfully"
+
+            - name: Destroy Summary
+              if: always()
+              run: |
+                  echo "## 🗑️ Terraform Destroy Report" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Region:** ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Workspace:** $(terraform workspace show 2>/dev/null || echo 'N/A')" >> $GITHUB_STEP_SUMMARY
+
+                  if [ "${{ inputs.dry-run }}" == "true" ]; then
+                    echo "**Mode:** 🔍 Dry Run (no changes made)" >> $GITHUB_STEP_SUMMARY
+                    echo "**Status:** ${{ steps.destroy-dry-run.outcome }}" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "**Mode:** 🗑️ Destroy" >> $GITHUB_STEP_SUMMARY
+                    echo "**Status:** ${{ steps.destroy.outcome }}" >> $GITHUB_STEP_SUMMARY
+                  fi
+
+                  if [ "${{ inputs.destroy-by-tags }}" != "" ]; then
+                    echo "" >> $GITHUB_STEP_SUMMARY
+                    echo "### 🏷️ Tag-Based Filtering" >> $GITHUB_STEP_SUMMARY
+                    echo '```json' >> $GITHUB_STEP_SUMMARY
+                    echo '${{ inputs.destroy-by-tags }}' >> $GITHUB_STEP_SUMMARY
+                    echo '```' >> $GITHUB_STEP_SUMMARY
+                    
+                    if [ -f /tmp/target_resources.txt ]; then
+                      RESOURCE_COUNT=$(wc -l < /tmp/target_resources.txt)
+                      echo "**Resources matched:** $RESOURCE_COUNT" >> $GITHUB_STEP_SUMMARY
+                      
+                      if [ "$RESOURCE_COUNT" -gt 0 ]; then
+                        echo "" >> $GITHUB_STEP_SUMMARY
+                        echo "**Resources destroyed:**" >> $GITHUB_STEP_SUMMARY
+                        echo '```' >> $GITHUB_STEP_SUMMARY
+                        cat /tmp/target_resources.txt >> $GITHUB_STEP_SUMMARY
+                        echo '```' >> $GITHUB_STEP_SUMMARY
+                      fi
+                    fi
+                  fi
+
+                  if [ "${{ inputs.target-resources }}" != "" ]; then
+                    echo "" >> $GITHUB_STEP_SUMMARY
+                    echo "### 🎯 Targeted Resources" >> $GITHUB_STEP_SUMMARY
+                    echo '```' >> $GITHUB_STEP_SUMMARY
+                    echo "${{ inputs.target-resources }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+                    echo '```' >> $GITHUB_STEP_SUMMARY
+                  fi
+
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY

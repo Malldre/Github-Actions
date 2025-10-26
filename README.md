@@ -1,40 +1,437 @@
 # ⚙️ Shared GitHub Actions
 
-This repository serves as a **central hub for reusable GitHub Actions** designed to streamline automation across multiple projects. By consolidating common workflows and actions here, you can ensure consistency, reduce duplication, and simplify maintenance.
+Central hub for reusable GitHub Actions workflows. Use these workflows across multiple projects to ensure consistency, reduce duplication, and simplify maintenance.
 
-## 📚 Overview
+## 📚 Available Workflows
 
-- General-purpose GitHub Actions
-- Reusable workflows via `workflow_call`
-- Automation scripts and templates
-- Designed for use across various repositories
+### 🏗️ Infrastructure & Deployment
 
-## 🚀 How to Use
+**1. Terraform (Modular)**
 
-You can reference actions or workflows from this repository in other projects using the following formats:
+Three separate workflows for maximum flexibility:
 
-### 🔹 Using an Action
+**terraform-plan.yml** - Plan infrastructure changes only
 
 ```yaml
-uses: your-username/your-repo-name@v1
+uses: Malldre/Github-Actions/.github/workflows/terraform-plan.yml@main
 with:
-  input1: value
-  input2: value
+  environment: "PROD"
+secrets:
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 ```
 
-### 🔹 Using a Reusable Workflow
+**terraform-apply.yml** - Apply infrastructure changes (with automatic tag management)
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+with:
+  environment: "PROD"
+  download-artifacts: true # Optional: download Lambda/artifacts
+  validate-tags: true # Default: true - validates tags
+  auto-tag-resources: true # Default: true - adds tags automatically if missing
+  required-tags: "Environment,ManagedBy,Repository" # Default required tags
+  additional-tags: '{"Project":"MyApp","CostCenter":"Engineering"}' # Optional custom tags
+  fail-on-missing-tags: false # Default: false - only fails after auto-tag attempt
+secrets:
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+```
+
+**terraform-destroy.yml** - Destroy infrastructure
+
+```yaml
+# Destroy tudo no ambiente
+uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
+with:
+  environment: 'staging'
+  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+  aws-region: 'us-east-1'
+  aws-statefile-s3-bucket: ${{ secrets.TF_STATE_BUCKET }}
+  aws-lock-dynamodb-table: ${{ secrets.TF_LOCK_TABLE }}
+
+# Destroy apenas recursos com tags específicas
+uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
+with:
+  environment: 'staging'
+  destroy-by-tags: '{"Environment":"staging","Type":"temporary"}'
+  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+  # ... outros parâmetros AWS
+
+# Destroy recursos específicos
+uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
+with:
+  environment: 'dev'
+  target-resources: 'aws_instance.test,aws_s3_bucket.temp'
+  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+  # ... outros parâmetros AWS
+
+# Dry-run (apenas mostrar o que seria destruído)
+uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
+with:
+  environment: 'production'
+  dry-run: true
+  destroy-by-tags: '{"Cleanup":"true"}'
+  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+  # ... outros parâmetros AWS
+```
+
+**terraform.yml** - Orchestrator (optional, calls above workflows based on action)
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/terraform.yml@main
+with:
+  environment: "PROD"
+  action: "apply" # plan, apply, or destroy
+secrets:
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+```
+
+**2. Docker Build & Push** (`docker-build-push.yml`) - Multi-platform builds, GitHub Container Registry
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/docker-build-push.yml@main
+with:
+  image-name: "my-app"
+  platforms: "linux/amd64,linux/arm64"
+secrets:
+  registry-password: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### � Package Management
+
+**3. Publish NPM Package** (`publish-package.yml`) - Version checking, testing, GitHub Packages
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/publish-package.yml@main
+secrets:
+  NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**4. Semantic Release** (`semantic-release.yml`) - Automated versioning, changelog, git tags
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/semantic-release.yml@main
+secrets:
+  NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### �️ Database
+
+**5. Drizzle Migrations** (`drizzle.yml`) - Secure migrations, environment-specific, validation
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/drizzle.yml@main
+with:
+  environment: "production"
+```
+
+_Requires `DATABASE_URL` secret_
+
+### 🔍 Code Quality
+
+**6. Code Quality Check** (`code-quality.yml`) - ESLint, Prettier, tests, security scan
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/code-quality.yml@main
+with:
+  run-eslint: true
+  run-prettier: true
+  run-tests: true
+```
+
+**7. Repository Check** (`check-repo.yml`) - Prevents execution in workflow repo, fork detection
+
+### 🏷️ Tag Management
+
+**8. Terraform Tag Validation** (`terraform-tag-validation.yml`) - Validates resources have required tags
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
+with:
+  environment: "production"
+  working-directory: "infra"
+  required-tags: "Environment,ManagedBy,Repository,CreatedBy"
+  fail-on-missing: false # true to fail, false to warn
+```
+
+**9. Terraform Auto Tag** (`terraform-auto-tag.yml`) - Automatically adds tags to resources
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/terraform-auto-tag.yml@main
+with:
+  environment: "production"
+  working-directory: "infra"
+  additional-tags: '{"Project":"MyApp","CostCenter":"Engineering"}'
+  create-pr: true # true for PR, false for direct commit
+```
+
+## ⚙️ Setup & Configuration
+
+### 🔐 Required Secrets
+
+Configure these secrets in your repository (Settings → Secrets and variables → Actions):
+
+**Option 1: Repository Secrets (Simple)**
+
+```
+AWS_ROLE_ARN_DEV = arn:aws:iam::652099910794:role/github-actions
+AWS_ROLE_ARN_QUAL = arn:aws:iam::ACCOUNT_ID:role/github-actions
+AWS_ROLE_ARN_PROD = arn:aws:iam::ACCOUNT_ID:role/github-actions
+TF_STATE_BUCKET = your-terraform-state-bucket
+TF_LOCK_TABLE = your-terraform-lock-table
+DATABASE_URL = postgresql://... (for Drizzle workflows)
+```
+
+**Option 2: Environment Secrets (RECOMMENDED)**
+
+Create environments: `DEV`, `QUAL`, `PROD` (Settings → Environments)
+
+Then add these secrets to EACH environment:
+
+```
+AWS_ROLE_ARN = arn:aws:iam::652099910794:role/github-actions (for DEV)
+AWS_ROLE_ARN = arn:aws:iam::ACCOUNT_ID:role/github-actions (for QUAL/PROD)
+TF_STATE_BUCKET = terraform-state-{environment}
+TF_LOCK_TABLE = terraform-locks-{environment}
+```
+
+**Environment → Branch Mapping:**
+
+```
+develop branch  → DEV environment
+homolog branch  → QUAL environment
+main branch     → PROD environment
+```
+
+**Benefits of Environment Secrets:**
+
+- ✅ Automatic protection rules (approvals, wait timers)
+- ✅ Same secret name across environments
+- ✅ Better separation and security
+- ✅ Easier to manage
+
+### 📝 Usage with Environments
+
 ```yaml
 jobs:
-  example:
-    uses: your-username/your-repo-name/.github/workflows/workflow-name.yml@v1
+  deploy-dev:
+    environment: DEV # Links to 'DEV' environment secrets
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
     with:
-      input1: value
+      environment: "DEV"
     secrets:
-      TOKEN: ${{ secrets.TOKEN }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }} # From 'DEV' environment
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 ```
 
-✅ Tip: Use version tags (@v1, @main, or specific commit SHAs) to ensure stability and avoid breaking changes.
+## 🚀 Quick Start
 
-🤝 Contributing
+**Example 1: Auto-Detect Environment (RECOMMENDED)**
 
-Feel free to open issues or pull requests to improve or expand the available actions. Contributions are welcome!
+```yaml
+name: Deploy Infrastructure
+on:
+  push:
+    branches: [main, homolog, develop]
+
+jobs:
+  # Dynamically detect environment based on branch
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+    steps:
+      - name: Set Environment
+        id: set-env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "environment=PROD" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/homolog" ]]; then
+            echo "environment=QUAL" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "environment=DEV" >> $GITHUB_OUTPUT
+          else
+            echo "environment=DEV" >> $GITHUB_OUTPUT
+          fi
+
+  # Deploy with detected environment
+  deploy:
+    needs: setup
+    environment: ${{ needs.setup.outputs.environment }} # DEV, QUAL, or PROD
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: ${{ needs.setup.outputs.environment }}
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }} # From environment secret
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+```
+
+**Example 2: Simple Multi-Environment**
+
+```yaml
+name: Deploy Infrastructure
+on:
+  push:
+    branches: [main, homolog, develop]
+
+jobs:
+  # DEV environment (develop branch)
+  deploy-dev:
+    if: github.ref == 'refs/heads/develop'
+    environment: DEV
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: "DEV"
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+
+  # QUAL environment (homolog branch)
+  deploy-qual:
+    if: github.ref == 'refs/heads/homolog'
+    environment: QUAL
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: "QUAL"
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+
+  # PROD environment (main branch - with approval)
+  deploy-prod:
+    if: github.ref == 'refs/heads/main'
+    environment: PROD
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: "PROD"
+      fail-on-missing-tags: true # Strict validation for production
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+```
+
+**Example 3: Separate Plan and Apply**
+
+```yaml
+name: Deploy Infrastructure
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    uses: Malldre/Github-Actions/.github/workflows/code-quality.yml@main
+
+  # Plan on PRs and main
+  terraform-plan:
+    needs: quality
+    uses: Malldre/Github-Actions/.github/workflows/terraform-plan.yml@main
+    with:
+      environment: "production"
+      aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+      aws-region: "us-east-1"
+      aws-statefile-s3-bucket: ${{ secrets.TF_STATE_BUCKET }}
+      aws-lock-dynamodb-table: ${{ secrets.TF_LOCK_TABLE }}
+
+  # Apply only on main (with automatic tag management)
+  terraform-apply:
+    needs: terraform-plan
+    if: github.ref == 'refs/heads/main'
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: "production"
+      aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
+      aws-region: "us-east-1"
+      aws-statefile-s3-bucket: ${{ secrets.TF_STATE_BUCKET }}
+      aws-lock-dynamodb-table: ${{ secrets.TF_LOCK_TABLE }}
+      # Tags are validated and added automatically if missing (default behavior)
+```
+
+**Example 2: Using Orchestrator (Simpler)**
+
+```yaml
+name: Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    uses: Malldre/Github-Actions/.github/workflows/code-quality.yml@main
+
+  deploy:
+    needs: quality
+    environment: PROD
+    uses: Malldre/Github-Actions/.github/workflows/terraform.yml@main
+    with:
+      environment: "PROD"
+      action: "apply" # or 'plan', 'destroy'
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+```
+
+**Example 3: Custom Tag Management (advanced)**
+
+```yaml
+name: Deploy with Custom Tags
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    environment: PROD
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: "PROD"
+      # Auto-tagging enabled by default with custom tags
+      additional-tags: '{"Project":"MyApp","CostCenter":"Engineering","Owner":"DevTeam"}'
+      fail-on-missing-tags: true # Fail if tags still missing after auto-tag
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
+```
+
+## 💡 Key Features
+
+- ✅ **Security**: No credential exposure, OIDC auth, explicit permissions
+- ✅ **Performance**: Caching (50-60% faster), timeouts configured
+- ✅ **Reliability**: Validations, error handling, detailed summaries
+- ✅ **Automatic Tag Management**: Resources are automatically tagged with required tags (Environment, ManagedBy, Repository, CreatedBy)
+- ✅ **Tag Validation**: All deployments validate tags before applying changes
+
+## 🏷️ Versioning
+
+```yaml
+uses: Malldre/Github-Actions/.github/workflows/terraform.yml@v1  # ✅ Recommended
+uses: Malldre/Github-Actions/.github/workflows/terraform.yml@main  # ⚠️ Latest
+uses: Malldre/Github-Actions/.github/workflows/terraform.yml@abc123  # ✅ Stable
+```
+
+## 🤝 Contributing
+
+Open issues or PRs. Use conventional commits (`feat:`, `fix:`, `docs:`).

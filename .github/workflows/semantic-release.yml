@@ -1,0 +1,81 @@
+name: Semantic Release
+
+on:
+    workflow_call:
+        inputs:
+            node-version:
+                description: "Node.js version"
+                required: false
+                type: string
+                default: "22"
+            dry-run:
+                description: "Run in dry-run mode"
+                required: false
+                type: boolean
+                default: false
+        secrets:
+            NPM_TOKEN:
+                description: "NPM token for publishing"
+                required: false
+
+permissions:
+    contents: write
+    issues: write
+    pull-requests: write
+    packages: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Verify semantic-release is installed
+              run: |
+                  if ! npm list semantic-release > /dev/null 2>&1; then
+                    echo "📦 Installing semantic-release..."
+                    npm install --save-dev semantic-release @semantic-release/git @semantic-release/changelog
+                  fi
+
+            - name: Build packages
+              run: |
+                  if grep -q '"build"' package.json; then
+                    echo "🔨 Building packages..."
+                    npm run build
+                  fi
+
+            - name: Run Semantic Release
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  NPM_TOKEN: ${{ secrets.NPM_TOKEN || secrets.GITHUB_TOKEN }}
+              run: |
+                  if [ "${{ inputs.dry-run }}" == "true" ]; then
+                    echo "🔍 Running semantic-release in dry-run mode..."
+                    npx semantic-release --dry-run
+                  else
+                    echo "🚀 Running semantic-release..."
+                    npx semantic-release
+                  fi
+
+            - name: Release Summary
+              if: always()
+              run: |
+                  echo "## 🎉 Release Report" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Dry Run:** ${{ inputs.dry-run }}" >> $GITHUB_STEP_SUMMARY
+                  echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY

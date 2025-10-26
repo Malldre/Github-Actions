@@ -1,89 +1,88 @@
-name: "Terraform Workflow"
+name: "Terraform Complete Workflow"
 
 on:
   workflow_call:
     inputs:
       environment:
+        description: "Target environment for deployment (DEV, QUAL, PROD)"
         required: true
         type: string
-      aws-assume-role-arn:
-        required: true
+      terraform-version:
+        description: "Terraform version to use"
+        required: false
         type: string
-      aws-region:
-        required: true
+        default: "1.8.3"
+      working-directory:
+        description: "Working directory for Terraform files"
+        required: false
         type: string
-      aws-statefile-s3-bucket:
-        required: true
+        default: "infra"
+      action:
+        description: "Action to perform: plan, apply, or destroy"
+        required: false
         type: string
-      aws-lock-dynamodb-table:
+        default: "apply"
+      download-artifacts:
+        description: "Download artifacts before apply"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      AWS_ROLE_ARN:
+        description: "AWS IAM role ARN for OIDC"
         required: true
-        type: string
+      AWS_REGION:
+        description: "AWS region"
+        required: true
+      TF_STATE_BUCKET:
+        description: "S3 bucket for Terraform state"
+        required: true
+      TF_LOCK_TABLE:
+        description: "DynamoDB table for state locking"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
 
 jobs:
-  terraform:
-    runs-on: ubuntu-latest
-    env:
-      AWS_REGION: ${{ inputs.aws-region }}
-    defaults:
-      run:
-        shell: bash
+  terraform-plan:
+    if: inputs.action == 'plan'
+    uses: Malldre/Github-Actions/.github/workflows/terraform-plan.yml@main
+    with:
+      environment: ${{ inputs.environment }}
+      terraform-version: ${{ inputs.terraform-version }}
+      working-directory: ${{ inputs.working-directory }}
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  terraform-apply:
+    if: inputs.action == 'apply'
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: ${{ inputs.environment }}
+      terraform-version: ${{ inputs.terraform-version }}
+      working-directory: ${{ inputs.working-directory }}
+      download-artifacts: ${{ inputs.download-artifacts }}
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 
-      - name: Download Lambda artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: lambda-packages
-          path: lambdas/output
-          
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.8.3
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ inputs.aws-assume-role-arn }}
-          role-session-name: Github_to_AWS_via_FederatedOIDC
-          aws-region: ${{ inputs.aws-region }}
-
-      - name: Read destroy configuration
-        id: read-destroy-config
-        run: |
-          DESTROY="$(jq -r '.${{ inputs.environment }}' ./infra/destroy_config.json)"
-          echo "destroy=$(echo $DESTROY)" >> $GITHUB_OUTPUT
-
-      - name: Terraform Init
-        run: |
-          cd infra && terraform init \
-            -backend-config="bucket=${{ inputs.aws-statefile-s3-bucket }}" \
-            -backend-config="key=${{ github.event.repository.name }}" \
-            -backend-config="region=${{ inputs.aws-region }}" \
-            -backend-config="dynamodb_table=${{ inputs.aws-lock-dynamodb-table }}"
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Destroy
-        if: steps.read-destroy-config.outputs.destroy == 'true'
-        id: terraform-destroy
-        run: cd infra &&
-          terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }} &&
-          terraform destroy -var-file="./envs/${{ inputs.environment }}/terraform.tfvars" -auto-approve
-
-      - name: Terraform Plan
-        if: steps.read-destroy-config.outputs.destroy != 'true'
-        id: terraform-plan
-        run: cd infra &&
-          terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }} &&
-          terraform plan -var-file="./envs/${{ inputs.environment }}/terraform.tfvars" -out="${{ inputs.environment }}.plan"
-
-      - name: Terraform Apply
-        if: steps.read-destroy-config.outputs.destroy != 'true'
-        id: terraform-apply
-        run: cd infra &&
-          terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }} &&
-          terraform apply "${{ inputs.environment }}.plan"
+  terraform-destroy:
+    if: inputs.action == 'destroy'
+    uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
+    with:
+      environment: ${{ inputs.environment }}
+      terraform-version: ${{ inputs.terraform-version }}
+      working-directory: ${{ inputs.working-directory }}
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}

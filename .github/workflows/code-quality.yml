@@ -1,0 +1,137 @@
+name: Code Quality Check
+
+on:
+    workflow_call:
+        inputs:
+            node-version:
+                description: "Node.js version"
+                required: false
+                type: string
+                default: "22"
+            run-eslint:
+                description: "Run ESLint"
+                required: false
+                type: boolean
+                default: true
+            run-prettier:
+                description: "Run Prettier"
+                required: false
+                type: boolean
+                default: true
+            run-tests:
+                description: "Run tests"
+                required: false
+                type: boolean
+                default: true
+
+permissions:
+    contents: read
+    pull-requests: write
+
+jobs:
+    quality-check:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run ESLint
+              if: inputs.run-eslint == true
+              run: |
+                  if grep -q '"lint"' package.json; then
+                    echo "🔍 Running ESLint..."
+                    npm run lint
+                    echo "✅ ESLint passed"
+                  else
+                    echo "⚠️ No lint script found, skipping ESLint"
+                  fi
+              continue-on-error: true
+              id: eslint
+
+            - name: Run Prettier
+              if: inputs.run-prettier == true
+              run: |
+                  if grep -q '"format:check"' package.json; then
+                    echo "💅 Checking code formatting..."
+                    npm run format:check
+                    echo "✅ Prettier check passed"
+                  elif grep -q 'prettier' package.json; then
+                    echo "💅 Checking code formatting with Prettier..."
+                    npx prettier --check .
+                    echo "✅ Prettier check passed"
+                  else
+                    echo "⚠️ Prettier not configured, skipping"
+                  fi
+              continue-on-error: true
+              id: prettier
+
+            - name: Run Tests
+              if: inputs.run-tests == true
+              run: |
+                  if grep -q '"test"' package.json; then
+                    echo "🧪 Running tests..."
+                    npm test
+                    echo "✅ Tests passed"
+                  else
+                    echo "⚠️ No test script found, skipping tests"
+                  fi
+              continue-on-error: true
+              id: tests
+
+            - name: Check for security vulnerabilities
+              run: |
+                  echo "🔒 Checking for security vulnerabilities..."
+                  npm audit --audit-level=moderate || echo "⚠️ Security vulnerabilities found"
+              continue-on-error: true
+              id: security
+
+            - name: Quality Summary
+              if: always()
+              run: |
+                  echo "## 📊 Code Quality Report" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+
+                  # ESLint
+                  if [ "${{ inputs.run-eslint }}" == "true" ]; then
+                    if [ "${{ steps.eslint.outcome }}" == "success" ]; then
+                      echo "✅ **ESLint:** Passed" >> $GITHUB_STEP_SUMMARY
+                    else
+                      echo "❌ **ESLint:** Failed" >> $GITHUB_STEP_SUMMARY
+                    fi
+                  fi
+
+                  # Prettier
+                  if [ "${{ inputs.run-prettier }}" == "true" ]; then
+                    if [ "${{ steps.prettier.outcome }}" == "success" ]; then
+                      echo "✅ **Prettier:** Passed" >> $GITHUB_STEP_SUMMARY
+                    else
+                      echo "❌ **Prettier:** Failed" >> $GITHUB_STEP_SUMMARY
+                    fi
+                  fi
+
+                  # Tests
+                  if [ "${{ inputs.run-tests }}" == "true" ]; then
+                    if [ "${{ steps.tests.outcome }}" == "success" ]; then
+                      echo "✅ **Tests:** Passed" >> $GITHUB_STEP_SUMMARY
+                    else
+                      echo "❌ **Tests:** Failed" >> $GITHUB_STEP_SUMMARY
+                    fi
+                  fi
+
+                  # Security
+                  if [ "${{ steps.security.outcome }}" == "success" ]; then
+                    echo "✅ **Security:** No critical vulnerabilities" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "⚠️ **Security:** Vulnerabilities detected" >> $GITHUB_STEP_SUMMARY
+                  fi
