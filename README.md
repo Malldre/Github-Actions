@@ -45,39 +45,37 @@ secrets:
 **terraform-destroy.yml** - Destroy infrastructure
 
 ```yaml
-# Destroy tudo no ambiente
+# Destroy all resources in environment
 uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
 with:
-  environment: 'staging'
-  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
-  aws-region: 'us-east-1'
-  aws-statefile-s3-bucket: ${{ secrets.TF_STATE_BUCKET }}
-  aws-lock-dynamodb-table: ${{ secrets.TF_LOCK_TABLE }}
+  environment: 'DEV'
+secrets:
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 
-# Destroy apenas recursos com tags específicas
+# Destroy only resources with specific tags
 uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
 with:
-  environment: 'staging'
-  destroy-by-tags: '{"Environment":"staging","Type":"temporary"}'
-  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
-  # ... outros parâmetros AWS
+  environment: 'DEV'
+  destroy-by-tags: '{"Environment":"dev","Type":"temporary"}'
+secrets:
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 
-# Destroy recursos específicos
+# Dry-run (show what would be destroyed)
 uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
 with:
-  environment: 'dev'
-  target-resources: 'aws_instance.test,aws_s3_bucket.temp'
-  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
-  # ... outros parâmetros AWS
-
-# Dry-run (apenas mostrar o que seria destruído)
-uses: Malldre/Github-Actions/.github/workflows/terraform-destroy.yml@main
-with:
-  environment: 'production'
+  environment: 'PROD'
   dry-run: true
-  destroy-by-tags: '{"Cleanup":"true"}'
-  aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
-  # ... outros parâmetros AWS
+secrets:
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 ```
 
 **terraform.yml** - Orchestrator (optional, calls above workflows based on action)
@@ -130,7 +128,7 @@ secrets:
 ```yaml
 uses: Malldre/Github-Actions/.github/workflows/drizzle.yml@main
 with:
-  environment: "production"
+  environment: "DEV"
 ```
 
 _Requires `DATABASE_URL` secret_
@@ -156,7 +154,7 @@ with:
 ```yaml
 uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
 with:
-  environment: "production"
+  environment: "DEV"
   working-directory: "infra"
   required-tags: "Environment,ManagedBy,Repository,CreatedBy"
   fail-on-missing: false # true to fail, false to warn
@@ -167,7 +165,7 @@ with:
 ```yaml
 uses: Malldre/Github-Actions/.github/workflows/terraform-auto-tag.yml@main
 with:
-  environment: "production"
+  environment: "DEV"
   working-directory: "infra"
   additional-tags: '{"Project":"MyApp","CostCenter":"Engineering"}'
   create-pr: true # true for PR, false for direct commit
@@ -179,7 +177,9 @@ with:
 
 Configure these secrets in your repository (Settings → Secrets and variables → Actions):
 
-**Option 1: Repository Secrets (Simple)**
+**⚠️ IMPORTANT:** Secrets must be configured in **each repository that uses these workflows**, not in the Github-Actions repository itself.
+
+#### Option 1: Repository Secrets (Simple)
 
 ```
 AWS_ROLE_ARN_DEV = arn:aws:iam::652099910794:role/github-actions
@@ -190,15 +190,15 @@ TF_LOCK_TABLE = your-terraform-lock-table
 DATABASE_URL = postgresql://... (for Drizzle workflows)
 ```
 
-**Option 2: Environment Secrets (RECOMMENDED)**
+#### Option 2: Environment Secrets (RECOMMENDED)
 
 Create environments: `DEV`, `QUAL`, `PROD` (Settings → Environments)
 
 Then add these secrets to EACH environment:
 
 ```
-AWS_ROLE_ARN = arn:aws:iam::652099910794:role/github-actions (for DEV)
-AWS_ROLE_ARN = arn:aws:iam::ACCOUNT_ID:role/github-actions (for QUAL/PROD)
+AWS_ROLE_ARN = arn:aws:iam::ACCOUNT_ID:role/github-actions
+AWS_REGION = REGION_NAME
 TF_STATE_BUCKET = terraform-state-{environment}
 TF_LOCK_TABLE = terraform-locks-{environment}
 ```
@@ -206,8 +206,8 @@ TF_LOCK_TABLE = terraform-locks-{environment}
 **Environment → Branch Mapping:**
 
 ```
-develop branch  → DEV environment
-homolog branch  → QUAL environment
+any branch  → DEV environment
+qual branch  → QUAL environment
 main branch     → PROD environment
 ```
 
@@ -346,11 +346,12 @@ jobs:
     needs: quality
     uses: Malldre/Github-Actions/.github/workflows/terraform-plan.yml@main
     with:
-      environment: "production"
-      aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
-      aws-region: "us-east-1"
-      aws-statefile-s3-bucket: ${{ secrets.TF_STATE_BUCKET }}
-      aws-lock-dynamodb-table: ${{ secrets.TF_LOCK_TABLE }}
+      environment: "PROD"
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 
   # Apply only on main (with automatic tag management)
   terraform-apply:
@@ -358,12 +359,12 @@ jobs:
     if: github.ref == 'refs/heads/main'
     uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
     with:
-      environment: "production"
-      aws-assume-role-arn: ${{ secrets.AWS_ROLE_ARN }}
-      aws-region: "us-east-1"
-      aws-statefile-s3-bucket: ${{ secrets.TF_STATE_BUCKET }}
-      aws-lock-dynamodb-table: ${{ secrets.TF_LOCK_TABLE }}
-      # Tags are validated and added automatically if missing (default behavior)
+      environment: "PROD"
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 ```
 
 **Example 2: Using Orchestrator (Simpler)**
