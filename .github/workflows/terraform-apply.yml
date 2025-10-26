@@ -114,11 +114,8 @@ jobs:
         needs: [validate-tags, auto-tag, validate-tags-after-auto-tag]
         if: |
             always() && 
-            (
-                (needs.validate-tags.result == 'success' && needs.validate-tags.outputs.validation-passed == 'true') ||
-                (needs.validate-tags-after-auto-tag.result == 'success' && needs.validate-tags-after-auto-tag.outputs.validation-passed == 'true') ||
-                (needs.validate-tags.result == 'skipped' && needs.auto-tag.result == 'skipped')
-            )
+            !contains(needs.*.result, 'failure') && 
+            !cancelled()
         runs-on: ubuntu-latest
         timeout-minutes: 30
         env:
