@@ -2,29 +2,55 @@ name: Repository Security Check
 
 on:
   workflow_call:
+    outputs:
+      should-run:
+        description: "Whether the workflow should continue"
+        value: ${{ jobs.check-repo.outputs.should-run }}
 
 permissions:
   contents: read
 
 jobs:
   check-repo:
-    # Prevent execution in the workflows repository itself
-    if: github.repository != 'Malldre/Github-Actions'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      should-run: ${{ steps.validate.outputs.should-run }}
 
     steps:
-      - name: Repository validation passed
+      - name: Validate repository
+        id: validate
         run: |
-          echo "## ✅ Repository Check Passed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Repository:** \`${{ github.repository }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Repository validation successful - workflow can proceed safely."
+          if [[ "${{ github.repository }}" == "Malldre/Github-Actions" ]]; then
+            echo "## ⛔ Workflow Execution Blocked" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Repository:** \`${{ github.repository }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ This workflow cannot run in the source repository (\`Malldre/Github-Actions\`)." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "These workflows are designed to be **used by other repositories**, not executed here." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "If you need to test workflows, please:" >> $GITHUB_STEP_SUMMARY
+            echo "1. Create a test repository" >> $GITHUB_STEP_SUMMARY
+            echo "2. Call these workflows from there" >> $GITHUB_STEP_SUMMARY
+            
+            echo "should-run=false" >> $GITHUB_OUTPUT
+            echo "❌ Workflow execution blocked - running in source repository"
+            exit 1
+          else
+            echo "## ✅ Repository Check Passed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Repository:** \`${{ github.repository }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Repository validation successful - workflow can proceed safely."
+            
+            echo "should-run=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Additional security checks
+        if: steps.validate.outputs.should-run == 'true'
         run: |
           echo "🔍 Running additional security validations..."
 
@@ -44,24 +70,3 @@ jobs:
           fi
 
           echo "✅ All security checks passed"
-
-  # This job will always run to show why the check was skipped
-  check-skipped-notification:
-    if: github.repository == 'Malldre/Github-Actions'
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-
-    steps:
-      - name: Workflow skipped in source repository
-        run: |
-          echo "## ℹ️ Workflow Check Skipped" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Repository:** \`${{ github.repository }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "This workflow is designed to run only in repositories that **use** these reusable workflows." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Since this is the source repository (\`Malldre/Github-Actions\`), the check is skipped." >> $GITHUB_STEP_SUMMARY
-          echo "This is expected behavior and not an error." >> $GITHUB_STEP_SUMMARY
-
-          echo "ℹ️ Check skipped - running in source repository (Malldre/Github-Actions)"
-          echo "This is expected and not an error."
