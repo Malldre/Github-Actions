@@ -91,25 +91,99 @@ jobs:
                       original_content = content
                       modified = False
                       
-                      # Pattern to match resource blocks
-                      resource_pattern = r'(resource\s+"[^"]+"\s+"[^"]+"\s+\{[^}]*?)(\})'
+                      # Resources that don't support tags
+                      NO_TAG_RESOURCES = [
+                          'aws_iam_role_policy_attachment',
+                          'aws_iam_policy_attachment',
+                          'aws_iam_user_policy_attachment',
+                          'aws_iam_group_policy_attachment',
+                          'aws_lambda_permission',
+                          'aws_cloudwatch_log_subscription_filter',
+                          'aws_route53_record',
+                          'aws_route53_zone_association',
+                          'aws_security_group_rule',
+                          'aws_vpc_endpoint_route_table_association',
+                          'aws_subnet_ids',
+                          'aws_route_table_association'
+                      ]
                       
-                      def add_tags_to_resource(match):
-                          nonlocal modified
-                          resource_block = match.group(1)
-                          closing_brace = match.group(2)
+                      def find_matching_brace(text, start_pos):
+                          """Find the closing brace for a resource block"""
+                          count = 0
+                          in_string = False
+                          escape_next = False
+                          
+                          for i in range(start_pos, len(text)):
+                              char = text[i]
+                              
+                              if escape_next:
+                                  escape_next = False
+                                  continue
+                              
+                              if char == '\\':
+                                  escape_next = True
+                                  continue
+                              
+                              if char == '"':
+                                  in_string = not in_string
+                                  continue
+                              
+                              if not in_string:
+                                  if char == '{':
+                                      count += 1
+                                  elif char == '}':
+                                      count -= 1
+                                      if count == 0:
+                                          return i
+                          
+                          return -1
+                      
+                      # Pattern to match resource declarations
+                      resource_pattern = r'resource\s+"([^"]+)"\s+"([^"]+)"\s+\{'
+                      
+                      new_content = content
+                      offset = 0
+                      
+                      for match in re.finditer(resource_pattern, content):
+                          resource_type = match.group(1)
+                          resource_name = match.group(2)
+                          start_pos = match.end()
+                          
+                          # Skip resources that don't support tags
+                          if resource_type in NO_TAG_RESOURCES:
+                              continue
+                          
+                          # Find the closing brace
+                          closing_brace_pos = find_matching_brace(content, start_pos)
+                          if closing_brace_pos == -1:
+                              continue
+                          
+                          # Get the resource block content
+                          resource_content = content[start_pos:closing_brace_pos]
                           
                           # Check if tags already exist
-                          if 'tags' not in resource_block or 'tags =' not in resource_block:
-                              # Add tags before closing brace
-                              tags_block = format_tags_block(default_tags, indent=2)
-                              modified = True
-                              return f"{resource_block}\n\n{tags_block}\n{closing_brace}"
+                          if re.search(r'\n\s*tags\s*=\s*\{', resource_content):
+                              continue
                           
-                          return match.group(0)
-                      
-                      # Process all resources
-                      new_content = re.sub(resource_pattern, add_tags_to_resource, content, flags=re.DOTALL)
+                          # Find proper indentation
+                          lines_before = content[:match.start()].split('\n')
+                          indent = len(lines_before[-1]) if lines_before else 0
+                          
+                          # Add tags before closing brace
+                          tags_block = format_tags_block(default_tags, indent=indent+2)
+                          
+                          # Calculate position in new_content with offset
+                          insert_pos = closing_brace_pos + offset
+                          
+                          # Insert tags
+                          new_content = (
+                              new_content[:insert_pos] + 
+                              "\n\n" + tags_block + "\n" + 
+                              new_content[insert_pos:]
+                          )
+                          
+                          offset += len("\n\n" + tags_block + "\n")
+                          modified = True
                       
                       if modified:
                           with open(file_path, 'w') as f:
