@@ -160,16 +160,25 @@ with:
   fail-on-missing: false # true to fail, false to warn
 ```
 
-**9. Terraform Auto Tag** (`terraform-auto-tag.yml`) - Automatically adds tags to resources
+**9. Terraform Tag Validation** (`terraform-tag-validation.yml`) - Validates tags and generates detailed report
 
 ```yaml
-uses: Malldre/Github-Actions/.github/workflows/terraform-auto-tag.yml@main
+uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
 with:
   environment: "DEV"
   working-directory: "infra"
   additional-tags: '{"Project":"MyApp","CostCenter":"Engineering"}'
-  create-pr: true # true for PR, false for direct commit
+  fail-on-missing: false # true to fail if tags are missing, false to warn only
 ```
+
+> **📝 Features:**
+>
+> - ✅ Validates which resources are missing required tags
+> - ✅ Shows exact **line numbers** where tags should be added
+> - ✅ Generates **ready-to-use tag blocks** for copy-paste
+> - ✅ Supports custom additional tags via JSON
+> - ✅ Creates detailed Markdown report + JSON artifact
+> - ❌ **Does NOT modify** your code (validation only)
 
 ## ⚙️ Setup & Configuration
 

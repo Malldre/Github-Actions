@@ -1,4 +1,4 @@
-﻿name: "Terraform Tag Validation"
+name: "Terraform Tag Validation"
 
 on:
   workflow_call:
@@ -12,166 +12,272 @@ on:
         required: false
         type: string
         default: "infra"
-      required-tags:
-        description: "Required tags (comma-separated)"
+      additional-tags:
+        description: "Additional custom tags (JSON format)"
         required: false
         type: string
-        default: "Environment,ManagedBy,Repository"
+        default: "{}"
       fail-on-missing:
         description: "Fail if resources missing tags"
         required: false
         type: boolean
         default: false
-    outputs:
-      validation-passed:
-        description: "Whether validation passed"
-        value: ${{ jobs.validate.outputs.passed }}
-      resources-without-tags:
-        description: "Count of resources without required tags"
-        value: ${{ jobs.validate.outputs.missing-count }}
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  validate-tags:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     outputs:
-      passed: ${{ steps.validate.outputs.passed }}
       missing-count: ${{ steps.validate.outputs.missing-count }}
+      has-missing-tags: ${{ steps.validate.outputs.has-missing-tags }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create Validation Script
-        run: |
-          cat > /tmp/validate_tags.py << 'PYTHON_EOF'
-          import sys
-          import re
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-          NO_TAG_RESOURCES = [
-              'aws_iam_role_policy_attachment',
-              'aws_iam_policy_attachment',
-              'aws_iam_user_policy_attachment',
-              'aws_iam_group_policy_attachment',
-              'aws_lambda_permission',
-              'aws_cloudwatch_log_subscription_filter',
-              'aws_route53_record',
-              'aws_route53_zone_association',
-              'aws_security_group_rule',
-              'aws_vpc_endpoint_route_table_association',
-              'aws_subnet_ids',
-              'aws_route_table_association'
-          ]
-
-          file_path = sys.argv[1]
-
-          with open(file_path, 'r') as f:
-              content = f.read()
-
-          resource_pattern = r'resource\s+"([^"]+)"\s+"([^"]+)"\s+\{'
-          for match in re.finditer(resource_pattern, content):
-              resource_type = match.group(1)
-              resource_name = match.group(2)
-              
-              if resource_type in NO_TAG_RESOURCES:
-                  continue
-              
-              start_pos = match.end()
-              brace_count = 1
-              end_pos = start_pos
-              
-              for i in range(start_pos, len(content)):
-                  if content[i] == '{':
-                      brace_count += 1
-                  elif content[i] == '}':
-                      brace_count -= 1
-                      if brace_count == 0:
-                          end_pos = i
-                          break
-              
-              resource_block = content[start_pos:end_pos]
-              
-              if not re.search(r'\n\s*tags\s*=\s*\{', resource_block):
-                  print(f"MISSING_TAGS:{resource_type}.{resource_name} in {file_path}")
-          PYTHON_EOF
-
-      - name: Validate Terraform Tags
+      - name: Validate Tag Requirements
         id: validate
         run: |
-          echo "Validating Terraform resource tags..."
+          echo "🔍 Validating Terraform resource tags..."
 
-          MISSING_TAGS=0
-          RESOURCES_CHECKED=0
+          # Default tags
+          REPO_NAME="${{ github.repository }}"
+          REPO_SHORT="${REPO_NAME#*/}"
+          ENVIRONMENT="${{ inputs.environment }}"
 
-          find ${{ inputs.working-directory }} -name "*.tf" -type f > /tmp/tf_files.txt
+          cat > /tmp/validate_tags.py << 'PYTHON_SCRIPT'
+          import os
+          import re
+          import json
+          import sys
+          from pathlib import Path
 
-          echo "Checking resources in:"
-          cat /tmp/tf_files.txt
-          echo ""
+          def parse_additional_tags(tags_json):
+              try:
+                  return json.loads(tags_json)
+              except:
+                  return {}
 
-          echo "## Tag Validation Report" > /tmp/tag_report.md
-          echo "" >> /tmp/tag_report.md
-          echo "**Environment:** ${{ inputs.environment }}" >> /tmp/tag_report.md
-          echo "**Required Tags:** ${{ inputs.required-tags }}" >> /tmp/tag_report.md
-          echo "" >> /tmp/tag_report.md
+          def get_required_tags(repo, env, additional):
+              tags = {
+                  "Environment": env,
+                  "ManagedBy": "Terraform",
+                  "Repository": repo,
+                  "CreatedBy": "GitHub-Actions"
+              }
+              tags.update(additional)
+              return tags
 
-          rm -f /tmp/validation_issues.txt
-          touch /tmp/validation_issues.txt
+          def format_tags_block(tags, indent=2):
+              spaces = " " * indent
+              lines = [f"{spaces}tags = {{"]
+              for key, value in sorted(tags.items()):
+                  lines.append(f'{spaces}  {key:<15} = "{value}"')
+              lines.append(f"{spaces}}}")
+              return "\n".join(lines)
 
-          while read -r tf_file; do
-            if grep -q "resource\s*\"" "$tf_file"; then
-              echo "Checking: $tf_file"
-              python3 /tmp/validate_tags.py "$tf_file" >> /tmp/validation_issues.txt 2>&1 || true
-              RESOURCES_CHECKED=$((RESOURCES_CHECKED + 1))
-            fi
-          done < /tmp/tf_files.txt
+          def validate_terraform_file(file_path, required_tags):
+              with open(file_path, 'r') as f:
+                  content = f.read()
+              
+              # Resources that don't support tags
+              NO_TAG_RESOURCES = [
+                  'aws_iam_role_policy_attachment',
+                  'aws_iam_policy_attachment',
+                  'aws_iam_user_policy_attachment',
+                  'aws_iam_group_policy_attachment',
+                  'aws_lambda_permission',
+                  'aws_cloudwatch_log_subscription_filter',
+                  'aws_route53_record',
+                  'aws_route53_zone_association',
+                  'aws_security_group_rule',
+                  'aws_vpc_endpoint_route_table_association',
+                  'aws_subnet_ids',
+                  'aws_route_table_association'
+              ]
+              
+              def find_matching_brace(text, start_pos):
+                  """Find the closing brace for a resource block"""
+                  count = 0
+                  in_string = False
+                  escape_next = False
+                  
+                  for i in range(start_pos, len(text)):
+                      char = text[i]
+                      
+                      if escape_next:
+                          escape_next = False
+                          continue
+                      
+                      if char == '\\':
+                          escape_next = True
+                          continue
+                      
+                      if char == '"':
+                          in_string = not in_string
+                          continue
+                      
+                      if not in_string:
+                          if char == '{':
+                              count += 1
+                          elif char == '}':
+                              count -= 1
+                              if count == 0:
+                                  return i
+                  
+                  return -1
+              
+              # Pattern to match resource declarations
+              resource_pattern = r'resource\s+"([^"]+)"\s+"([^"]+)"\s+\{'
+              
+              missing_tags = []
+              
+              for match in re.finditer(resource_pattern, content):
+                  resource_type = match.group(1)
+                  resource_name = match.group(2)
+                  start_pos = match.end()
+                  
+                  # Skip resources that don't support tags
+                  if resource_type in NO_TAG_RESOURCES:
+                      continue
+                  
+                  # Find the closing brace
+                  closing_brace_pos = find_matching_brace(content, start_pos)
+                  if closing_brace_pos == -1:
+                      continue
+                  
+                  # Get the resource block content
+                  resource_content = content[start_pos:closing_brace_pos]
+                  
+                  # Check if tags already exist
+                  if not re.search(r'\n\s*tags\s*=\s*\{', resource_content):
+                      # Find proper indentation
+                      lines_before = content[:match.start()].split('\n')
+                      indent = len(lines_before[-1]) if lines_before else 0
+                      
+                      # Get line number
+                      line_num = content[:match.start()].count('\n') + 1
+                      
+                      missing_tags.append({
+                          'file': file_path,
+                          'line': line_num,
+                          'resource_type': resource_type,
+                          'resource_name': resource_name,
+                          'suggested_tags': format_tags_block(required_tags, indent=indent+2)
+                      })
+              
+              return missing_tags
 
-          if [ -s /tmp/validation_issues.txt ]; then
-            MISSING_TAGS=$(grep -c "MISSING_TAGS:" /tmp/validation_issues.txt 2>/dev/null || echo "0")
-            MISSING_TAGS=$(echo "$MISSING_TAGS" | tr -d '\n\r ')
-            
-            if ! [[ "$MISSING_TAGS" =~ ^[0-9]+$ ]]; then
-              MISSING_TAGS=0
-            fi
-            
-            if [ "$MISSING_TAGS" -gt 0 ]; then
-              echo "### Resources Without Tags" >> /tmp/tag_report.md
-              echo "" >> /tmp/tag_report.md
-              echo '```' >> /tmp/tag_report.md
-              grep "MISSING_TAGS:" /tmp/validation_issues.txt | sed 's/MISSING_TAGS://' >> /tmp/tag_report.md
-              echo '```' >> /tmp/tag_report.md
-            fi
-          else
-            MISSING_TAGS=0
-          fi
+          def main():
+              repo = sys.argv[1]
+              env = sys.argv[2]
+              working_dir = sys.argv[3]
+              additional_json = sys.argv[4] if len(sys.argv) > 4 else "{}"
+              
+              additional = parse_additional_tags(additional_json)
+              required_tags = get_required_tags(repo, env, additional)
+              
+              print(f"Required tags: {json.dumps(required_tags, indent=2)}")
+              print("")
+              
+              all_missing = []
+              tf_dir = Path(working_dir)
+              
+              for tf_file in tf_dir.rglob("*.tf"):
+                  missing = validate_terraform_file(tf_file, required_tags)
+                  if missing:
+                      all_missing.extend(missing)
+                      print(f"⚠️  {tf_file}: {len(missing)} resource(s) missing tags")
+              
+              # Save detailed report
+              with open("/tmp/missing_tags_report.json", "w") as f:
+                  json.dump(all_missing, f, indent=2)
+              
+              print(f"\nTotal: {len(all_missing)} resources missing tags")
+              
+              return len(all_missing)
 
-          echo "" >> /tmp/tag_report.md
-          echo "**Resources Checked:** $RESOURCES_CHECKED" >> /tmp/tag_report.md
-          echo "**Resources Missing Tags:** $MISSING_TAGS" >> /tmp/tag_report.md
+          if __name__ == "__main__":
+              count = main()
+              sys.exit(0 if count >= 0 else 1)
+          PYTHON_SCRIPT
 
-          echo "missing-count=${MISSING_TAGS}" >> $GITHUB_OUTPUT
+          # Run validation
+          python /tmp/validate_tags.py \
+            "$REPO_SHORT" \
+            "$ENVIRONMENT" \
+            "${{ inputs.working-directory }}" \
+            '${{ inputs.additional-tags }}'
 
-          if [ "$MISSING_TAGS" -eq 0 ]; then
-            echo "passed=true" >> $GITHUB_OUTPUT
-            echo "All resources have tags!" >> /tmp/tag_report.md
-            echo "Tag validation passed"
-          else
-            echo "passed=false" >> $GITHUB_OUTPUT
-            echo "" >> /tmp/tag_report.md
-            echo "Found $MISSING_TAGS resources without proper tags" >> /tmp/tag_report.md
-            echo "Warning: $MISSING_TAGS resources missing tags"
+          MISSING_COUNT=$(cat /tmp/missing_tags_report.json | python -c "import sys, json; print(len(json.load(sys.stdin)))")
+          echo "missing-count=$MISSING_COUNT" >> $GITHUB_OUTPUT
+          echo "has-missing-tags=$([ $MISSING_COUNT -gt 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+          # Generate detailed report
+          cat > /tmp/generate_report.py << 'REPORT_SCRIPT'
+          import json
+          import sys
+
+          with open('/tmp/missing_tags_report.json', 'r') as f:
+              missing_tags = json.load(f)
+
+          if not missing_tags:
+              print("## ✅ Tag Validation Report")
+              print("")
+              print("All Terraform resources have the required tags!")
+              sys.exit(0)
+
+          print("## ⚠️ Tag Validation Report")
+          print("")
+          print(f"**Total Resources Missing Tags:** {len(missing_tags)}")
+          print("")
+          print("### Resources Requiring Tags")
+          print("")
+
+          current_file = None
+          for item in missing_tags:
+              if current_file != item['file']:
+                  current_file = item['file']
+                  print(f"\n#### 📄 `{item['file']}`")
+                  print("")
+              
+              print(f"**Line {item['line']}:** `{item['resource_type']}.{item['resource_name']}`")
+              print("")
+              print("```hcl")
+              print(item['suggested_tags'])
+              print("```")
+              print("")
+
+          print("---")
+          print("")
+          print("### 📝 How to Fix")
+          print("")
+          print("Add the suggested tags block to each resource listed above.")
+          print("Make sure to place the tags block inside the resource definition, before the closing brace `}`.")
+          REPORT_SCRIPT
+
+          python /tmp/generate_report.py > /tmp/tag_report.md
+
+          if [ "$MISSING_COUNT" -gt 0 ]; then
+            echo "⚠️ Found $MISSING_COUNT resources missing required tags"
+            cat /tmp/tag_report.md >> $GITHUB_STEP_SUMMARY
             
             if [ "${{ inputs.fail-on-missing }}" == "true" ]; then
-              echo "Failing due to missing tags"
-              cat /tmp/tag_report.md >> $GITHUB_STEP_SUMMARY
+              echo "❌ Failing due to missing tags"
               exit 1
             fi
+          else
+            echo "✅ All resources have required tags"
+            cat /tmp/tag_report.md >> $GITHUB_STEP_SUMMARY
           fi
-
-          cat /tmp/tag_report.md >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Validation Report
         if: always()
@@ -179,4 +285,12 @@ jobs:
         with:
           name: tag-validation-report-${{ inputs.environment }}
           path: /tmp/tag_report.md
+          retention-days: 7
+
+      - name: Upload Detailed Report (JSON)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tag-validation-details-${{ inputs.environment }}
+          path: /tmp/missing_tags_report.json
           retention-days: 7
