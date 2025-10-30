@@ -47,11 +47,6 @@ on:
                 required: false
                 type: boolean
                 default: false
-            auto-tag-resources:
-                description: "Automatically add tags to resources if missing"
-                required: false
-                type: boolean
-                default: true
             additional-tags:
                 description: "Additional custom tags (JSON format)"
                 required: false
@@ -83,41 +78,15 @@ jobs:
         with:
             environment: ${{ inputs.environment }}
             working-directory: ${{ inputs.working-directory }}
-            required-tags: ${{ inputs.required-tags }}
-            fail-on-missing: false
-
-    auto-tag:
-        needs: [validate-tags]
-        if: |
-            always() && 
-            inputs.auto-tag-resources == true && 
-            (needs.validate-tags.result == 'success' && needs.validate-tags.outputs.validation-passed == 'false' ||
-             needs.validate-tags.result == 'skipped')
-        uses: Malldre/Github-Actions/.github/workflows/terraform-auto-tag.yml@main
-        with:
-            environment: ${{ inputs.environment }}
-            working-directory: ${{ inputs.working-directory }}
             additional-tags: ${{ inputs.additional-tags }}
-            create-pr: false
-
-    validate-tags-after-auto-tag:
-        needs: [auto-tag]
-        if: always() && needs.auto-tag.result == 'success'
-        uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
-        with:
-            environment: ${{ inputs.environment }}
-            working-directory: ${{ inputs.working-directory }}
-            required-tags: ${{ inputs.required-tags }}
             fail-on-missing: ${{ inputs.fail-on-missing-tags }}
 
     apply:
-        needs: [validate-tags, auto-tag, validate-tags-after-auto-tag]
-        if: |
-            always() && 
-            !contains(needs.*.result, 'failure') && 
-            !cancelled()
+        needs: [validate-tags]
+        if: always() && !contains(needs.*.result, 'failure') && !cancelled()
         runs-on: ubuntu-latest
         timeout-minutes: 30
+        environment: ${{ inputs.environment }}
         env:
             AWS_REGION: ${{ secrets.AWS_REGION }}
             TF_IN_AUTOMATION: true
@@ -235,13 +204,15 @@ jobs:
 
                   if [ "${{ inputs.validate-tags }}" == "true" ]; then
                     echo "" >> $GITHUB_STEP_SUMMARY
-                    echo "### 🏷️ Tag Management" >> $GITHUB_STEP_SUMMARY
+                    echo "### 🏷️ Tag Validation" >> $GITHUB_STEP_SUMMARY
                     echo "**Tag Validation:** ✅ Enabled" >> $GITHUB_STEP_SUMMARY
                     
-                    if [ "${{ needs.auto-tag.result }}" == "success" ]; then
-                      echo "**Auto-Tag:** ✅ Tags added automatically" >> $GITHUB_STEP_SUMMARY
-                    elif [ "${{ needs.auto-tag.result }}" == "skipped" ]; then
-                      echo "**Auto-Tag:** ⏭️ Skipped (all resources already tagged)" >> $GITHUB_STEP_SUMMARY
+                    if [ "${{ needs.validate-tags.result }}" == "success" ]; then
+                      echo "**Validation Result:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
+                    elif [ "${{ needs.validate-tags.result }}" == "skipped" ]; then
+                      echo "**Validation Result:** ⏭️ Skipped" >> $GITHUB_STEP_SUMMARY
+                    elif [ "${{ needs.validate-tags.result }}" == "failure" ]; then
+                      echo "**Validation Result:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
                     fi
                   fi
 

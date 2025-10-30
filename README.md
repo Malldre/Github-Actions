@@ -23,18 +23,16 @@ secrets:
   TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }}
 ```
 
-**terraform-apply.yml** - Apply infrastructure changes (with automatic tag management)
+**terraform-apply.yml** - Apply infrastructure changes (with tag validation)
 
 ```yaml
 uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
 with:
   environment: "PROD"
   download-artifacts: true # Optional: download Lambda/artifacts
-  validate-tags: true # Default: true - validates tags
-  auto-tag-resources: true # Default: true - adds tags automatically if missing
-  required-tags: "Environment,ManagedBy,Repository" # Default required tags
+  validate-tags: true # Default: true - validates tags before apply
+  fail-on-missing-tags: false # Default: false - set true to fail if tags missing
   additional-tags: '{"Project":"MyApp","CostCenter":"Engineering"}' # Optional custom tags
-  fail-on-missing-tags: false # Default: false - only fails after auto-tag attempt
 secrets:
   AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -199,7 +197,7 @@ TF_LOCK_TABLE = your-terraform-lock-table
 DATABASE_URL = postgresql://... (for Drizzle workflows)
 ```
 
-#### Option 2: Environment Secrets (RECOMMENDED)
+#### Option 2: Environment Secrets (RECOMMENDED) ⭐
 
 Create environments: `DEV`, `QUAL`, `PROD` (Settings → Environments)
 
@@ -207,17 +205,26 @@ Then add these secrets to EACH environment:
 
 ```
 AWS_ROLE_ARN = arn:aws:iam::ACCOUNT_ID:role/github-actions
-AWS_REGION = REGION_NAME
+AWS_REGION = us-east-1  (or your preferred region)
 TF_STATE_BUCKET = terraform-state-{environment}
 TF_LOCK_TABLE = terraform-locks-{environment}
 ```
 
-**Environment → Branch Mapping:**
+**⚠️ IMPORTANT:** All Terraform workflows (`terraform-plan`, `terraform-apply`, `terraform-destroy`) now **require** the `environment` parameter to access environment-scoped secrets.
 
-```
-any branch  → DEV environment
-qual branch  → QUAL environment
-main branch     → PROD environment
+**Example:**
+
+```yaml
+jobs:
+  deploy:
+    uses: Malldre/Github-Actions/.github/workflows/terraform-apply.yml@main
+    with:
+      environment: "DEV" # ← This is REQUIRED to access environment secrets
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }} # From DEV environment
+      AWS_REGION: ${{ secrets.AWS_REGION }} # From DEV environment
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }} # From DEV environment
+      TF_LOCK_TABLE: ${{ secrets.TF_LOCK_TABLE }} # From DEV environment
 ```
 
 **Benefits of Environment Secrets:**
@@ -226,6 +233,7 @@ main branch     → PROD environment
 - ✅ Same secret name across environments
 - ✅ Better separation and security
 - ✅ Easier to manage
+- ✅ Works seamlessly with all workflows
 
 ### 📝 Usage with Environments
 
