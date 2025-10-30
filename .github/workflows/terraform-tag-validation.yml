@@ -167,7 +167,7 @@ jobs:
                       line_num = content[:match.start()].count('\n') + 1
                       
                       missing_tags.append({
-                          'file': file_path,
+                          'file': str(file_path),
                           'line': line_num,
                           'resource_type': resource_type,
                           'resource_name': resource_name,
@@ -192,7 +192,7 @@ jobs:
               tf_dir = Path(working_dir)
               
               for tf_file in tf_dir.rglob("*.tf"):
-                  missing = validate_terraform_file(tf_file, required_tags)
+                  missing = validate_terraform_file(str(tf_file), required_tags)
                   if missing:
                       all_missing.extend(missing)
                       print(f"⚠️  {tf_file}: {len(missing)} resource(s) missing tags")
