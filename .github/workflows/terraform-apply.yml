@@ -83,7 +83,10 @@ jobs:
 
     apply:
         needs: [validate-tags]
-        if: always() && !contains(needs.*.result, 'failure') && !cancelled()
+        if: |
+            always() && 
+            (needs.validate-tags.result == 'success' || needs.validate-tags.result == 'skipped') &&
+            !cancelled()
         runs-on: ubuntu-latest
         timeout-minutes: 30
         environment: ${{ inputs.environment }}
@@ -132,10 +135,26 @@ jobs:
                   restore-keys: |
                       terraform-${{ runner.os }}-
 
+            - name: Validate AWS Role ARN
+              id: validate-arn
+              run: |
+                  ROLE_ARN="${{ secrets.AWS_ROLE_ARN }}"
+                  echo "🔍 Validating AWS Role ARN..."
+
+                  if [[ $ROLE_ARN == arn:aws:iam::* ]]; then
+                    echo "✅ Valid ARN format: $ROLE_ARN"
+                    echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+                  else
+                    echo "❌ Error: AWS_ROLE_ARN must be a complete ARN"
+                    echo "Expected format: arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME"
+                    echo "Received: $ROLE_ARN"
+                    exit 1
+                  fi
+
             - name: Configure AWS Credentials
               uses: aws-actions/configure-aws-credentials@v4
               with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+                  role-to-assume: ${{ steps.validate-arn.outputs.role_arn }}
                   role-session-name: Github_to_AWS_via_FederatedOIDC
                   aws-region: ${{ secrets.AWS_REGION }}
 
