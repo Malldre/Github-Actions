@@ -82,6 +82,7 @@ jobs:
                   echo "✅ Credentials valid"
 
             - name: Terraform Init
+              working-directory: ${{ inputs.working-directory }}
               run: |
                   echo "🔄 Initializing Terraform..."
                   terraform init \
@@ -92,21 +93,25 @@ jobs:
                   echo "✅ Initialized"
 
             - name: Select or Create Workspace
+              working-directory: ${{ inputs.working-directory }}
               run: |
                   echo "🔄 Workspace: ${{ inputs.environment }}"
                   terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }}
                   echo "✅ Using: $(terraform workspace show)"
 
             - name: Terraform Validate
+              working-directory: ${{ inputs.working-directory }}
               run: |
                   echo "🔍 Validating..."
                   terraform validate
                   echo "✅ Valid"
 
             - name: Terraform Format Check
+              working-directory: ${{ inputs.working-directory }}
               run: terraform fmt -check -recursive || echo "⚠️ Format issues"
 
             - name: Terraform Plan
+              working-directory: ${{ inputs.working-directory }}
               run: |
                   echo "📋 Planning changes..."
                   terraform plan \
