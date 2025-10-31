@@ -72,20 +72,19 @@ permissions:
     pull-requests: write
 
 jobs:
-    validate-tags:
+    validate-provider:
         if: inputs.validate-tags == true
-        uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
+        uses: Malldre/Github-Actions/.github/workflows/terraform-provider-validation.yml@main
         with:
             environment: ${{ inputs.environment }}
             working-directory: ${{ inputs.working-directory }}
-            additional-tags: ${{ inputs.additional-tags }}
             fail-on-missing: ${{ inputs.fail-on-missing-tags }}
 
     apply:
-        needs: [validate-tags]
+        needs: [validate-provider]
         if: |
             always() && 
-            (needs.validate-tags.result == 'success' || needs.validate-tags.result == 'skipped') &&
+            (needs.validate-provider.result == 'success' || needs.validate-provider.result == 'skipped') &&
             !cancelled()
         runs-on: ubuntu-latest
         timeout-minutes: 30
@@ -186,6 +185,9 @@ jobs:
                   echo "📋 Planning changes..."
                   terraform plan \
                     -var-file="./envs/${{ inputs.environment }}/terraform.tfvars" \
+                    -var="github_user=${{ github.actor }}" \
+                    -var="environment=${{ inputs.environment }}" \
+                    -var="github_repository=${{ github.repository }}" \
                     -out="${{ inputs.environment }}.plan" \
                     -no-color
                   echo "✅ Plan complete"
@@ -223,14 +225,14 @@ jobs:
 
                   if [ "${{ inputs.validate-tags }}" == "true" ]; then
                     echo "" >> $GITHUB_STEP_SUMMARY
-                    echo "### 🏷️ Tag Validation" >> $GITHUB_STEP_SUMMARY
-                    echo "**Tag Validation:** ✅ Enabled" >> $GITHUB_STEP_SUMMARY
+                    echo "### 🏷️ Provider Validation" >> $GITHUB_STEP_SUMMARY
+                    echo "**Validation:** ✅ Enabled" >> $GITHUB_STEP_SUMMARY
                     
-                    if [ "${{ needs.validate-tags.result }}" == "success" ]; then
+                    if [ "${{ needs.validate-provider.result }}" == "success" ]; then
                       echo "**Validation Result:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
-                    elif [ "${{ needs.validate-tags.result }}" == "skipped" ]; then
+                    elif [ "${{ needs.validate-provider.result }}" == "skipped" ]; then
                       echo "**Validation Result:** ⏭️ Skipped" >> $GITHUB_STEP_SUMMARY
-                    elif [ "${{ needs.validate-tags.result }}" == "failure" ]; then
+                    elif [ "${{ needs.validate-provider.result }}" == "failure" ]; then
                       echo "**Validation Result:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
                     fi
                   fi
