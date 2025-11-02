@@ -1,0 +1,320 @@
+name: "Build Lambda Functions"
+
+on:
+  workflow_call:
+    inputs:
+      lambda-names:
+        description: "Comma-separated list of lambda function names to build (e.g., 'get_schema,list_schema,upload_schema'). Leave empty to auto-detect all lambdas in directory."
+        required: false
+        type: string
+        default: ""
+      lambdas-directory:
+        description: "Base directory containing lambda functions"
+        required: false
+        type: string
+        default: "lambdas"
+      node-version:
+        description: "Node.js version to use for building"
+        required: false
+        type: string
+        default: "20"
+      output-directory:
+        description: "Directory to output packaged lambda ZIP files"
+        required: false
+        type: string
+        default: "lambdas/output"
+      artifact-name:
+        description: "Name of the artifact to upload"
+        required: false
+        type: string
+        default: "lambda-packages"
+      retention-days:
+        description: "Number of days to retain artifacts"
+        required: false
+        type: number
+        default: 1
+      build-directory:
+        description: "Directory name containing built files (e.g., 'build', 'dist')"
+        required: false
+        type: string
+        default: "build"
+      include-node-modules:
+        description: "Include node_modules in package"
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      artifacts-uploaded:
+        description: "Indicates if artifacts were successfully uploaded"
+        value: ${{ jobs.build.outputs.success }}
+      package-count:
+        description: "Number of lambda packages created"
+        value: ${{ jobs.build.outputs.package-count }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and Package Lambdas
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      success: ${{ steps.upload.outcome == 'success' }}
+      package-count: ${{ steps.count.outputs.count }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ========================================
+      # Setup Node.js
+      # ========================================
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # ========================================
+      # Parse Lambda Names
+      # ========================================
+
+      - name: Auto-detect or parse lambda names
+        id: parse-lambdas
+        run: |
+          LAMBDA_NAMES="${{ inputs.lambda-names }}"
+          LAMBDAS_DIR="${{ inputs.lambdas-directory }}"
+
+          # Auto-detect if lambda-names is empty
+          if [ -z "$LAMBDA_NAMES" ]; then
+            echo "� Auto-detecting lambdas in directory: $LAMBDAS_DIR"
+            
+            if [ ! -d "$LAMBDAS_DIR" ]; then
+              echo "❌ Directory not found: $LAMBDAS_DIR"
+              exit 1
+            fi
+            
+            # Find all subdirectories with package.json
+            DETECTED_LAMBDAS=()
+            for dir in "$LAMBDAS_DIR"/*/ ; do
+              if [ -d "$dir" ]; then
+                LAMBDA_NAME=$(basename "$dir")
+                
+                # Check if it has package.json
+                if [ -f "$dir/package.json" ]; then
+                  DETECTED_LAMBDAS+=("$LAMBDA_NAME")
+                  echo "  ✓ Detected: $LAMBDA_NAME"
+                else
+                  echo "  ⊘ Skipped: $LAMBDA_NAME (no package.json)"
+                fi
+              fi
+            done
+            
+            # Convert array to comma-separated string
+            if [ ${#DETECTED_LAMBDAS[@]} -eq 0 ]; then
+              echo "❌ No lambdas found in $LAMBDAS_DIR"
+              exit 1
+            fi
+            
+            LAMBDA_NAMES=$(IFS=,; echo "${DETECTED_LAMBDAS[*]}")
+            echo "✅ Auto-detected ${#DETECTED_LAMBDAS[@]} lambda(s): $LAMBDA_NAMES"
+          else
+            echo "📋 Using provided lambda names: $LAMBDA_NAMES"
+          fi
+
+          # Save to output and environment
+          echo "lambda_names=$LAMBDA_NAMES" >> $GITHUB_OUTPUT
+          echo "LAMBDA_NAMES=$LAMBDA_NAMES" >> $GITHUB_ENV
+
+          # Count lambdas
+          IFS=',' read -ra LAMBDAS <<< "$LAMBDA_NAMES"
+          COUNT=${#LAMBDAS[@]}
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          echo "📦 Total lambda functions to build: $COUNT"
+
+      # ========================================
+      # Install Dependencies for All Lambdas
+      # ========================================
+
+      - name: Install dependencies for all lambdas
+        run: |
+          echo "📥 Installing dependencies for all lambdas..."
+
+          IFS=',' read -ra LAMBDAS <<< "${{ steps.parse-lambdas.outputs.lambda_names }}"
+
+          for LAMBDA in "${LAMBDAS[@]}"; do
+            LAMBDA=$(echo "$LAMBDA" | xargs)  # Trim whitespace
+            LAMBDA_PATH="${{ inputs.lambdas-directory }}/$LAMBDA"
+            
+            if [ -d "$LAMBDA_PATH" ]; then
+              echo ""
+              echo "📦 Installing dependencies for: $LAMBDA"
+              cd "$LAMBDA_PATH"
+              
+              if [ -f "package.json" ]; then
+                npm ci
+                echo "✅ Dependencies installed for $LAMBDA"
+              else
+                echo "⚠️ No package.json found for $LAMBDA, skipping..."
+              fi
+              
+              cd - > /dev/null
+            else
+              echo "❌ Lambda directory not found: $LAMBDA_PATH"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "✅ All dependencies installed"
+
+      # ========================================
+      # Build TypeScript for All Lambdas
+      # ========================================
+
+      - name: Build all lambdas
+        run: |
+          echo "🔨 Building all lambdas..."
+
+          IFS=',' read -ra LAMBDAS <<< "${{ steps.parse-lambdas.outputs.lambda_names }}"
+
+          for LAMBDA in "${LAMBDAS[@]}"; do
+            LAMBDA=$(echo "$LAMBDA" | xargs)  # Trim whitespace
+            LAMBDA_PATH="${{ inputs.lambdas-directory }}/$LAMBDA"
+            
+            echo ""
+            echo "🔨 Building: $LAMBDA"
+            cd "$LAMBDA_PATH"
+            
+            if [ -f "package.json" ] && grep -q '"build"' package.json; then
+              npm run build
+              echo "✅ Build completed for $LAMBDA"
+            else
+              echo "⚠️ No build script found for $LAMBDA, skipping build..."
+            fi
+            
+            cd - > /dev/null
+          done
+
+          echo ""
+          echo "✅ All builds completed"
+
+      # ========================================
+      # Package Lambdas
+      # ========================================
+
+      - name: Create output directory
+        run: |
+          mkdir -p ${{ inputs.output-directory }}
+          echo "✅ Output directory created: ${{ inputs.output-directory }}"
+
+      - name: Package all lambdas
+        id: package
+        run: |
+          echo "📦 Packaging all lambdas..."
+
+          IFS=',' read -ra LAMBDAS <<< "${{ steps.parse-lambdas.outputs.lambda_names }}"
+          PACKAGE_COUNT=0
+
+          for LAMBDA in "${LAMBDAS[@]}"; do
+            LAMBDA=$(echo "$LAMBDA" | xargs)  # Trim whitespace
+            LAMBDA_PATH="${{ inputs.lambdas-directory }}/$LAMBDA"
+            OUTPUT_ZIP="${{ inputs.output-directory }}/${LAMBDA}.zip"
+            
+            echo ""
+            echo "📦 Packaging: $LAMBDA"
+            cd "$LAMBDA_PATH"
+            
+            # Determine what to include in the package
+            PACKAGE_ITEMS=""
+            
+            # Check for build directory
+            if [ -d "${{ inputs.build-directory }}" ]; then
+              PACKAGE_ITEMS="${{ inputs.build-directory }}/"
+              echo "  ✓ Including build directory"
+            fi
+            
+            # Check for node_modules
+            if [ "${{ inputs.include-node-modules }}" == "true" ] && [ -d "node_modules" ]; then
+              PACKAGE_ITEMS="$PACKAGE_ITEMS node_modules/"
+              echo "  ✓ Including node_modules"
+            fi
+            
+            # Create ZIP
+            if [ -n "$PACKAGE_ITEMS" ]; then
+              zip -r "../../${OUTPUT_ZIP}" $PACKAGE_ITEMS
+              PACKAGE_COUNT=$((PACKAGE_COUNT + 1))
+              echo "✅ Package created: ${OUTPUT_ZIP}"
+            else
+              echo "⚠️ No files to package for $LAMBDA"
+            fi
+            
+            cd - > /dev/null
+          done
+
+          echo ""
+          echo "✅ All packages created: $PACKAGE_COUNT"
+          echo "package_count=$PACKAGE_COUNT" >> $GITHUB_OUTPUT
+
+      # ========================================
+      # Summary
+      # ========================================
+
+      - name: List created packages
+        id: count
+        run: |
+          echo "### 📦 Lambda Packages Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -d "${{ inputs.output-directory }}" ]; then
+            FILE_COUNT=$(ls -1 ${{ inputs.output-directory }}/*.zip 2>/dev/null | wc -l)
+            
+            if [ "$FILE_COUNT" -gt 0 ]; then
+              echo "**Total packages:** $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              ls -lh ${{ inputs.output-directory }}/*.zip >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Package sizes:**" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              du -h ${{ inputs.output-directory }}/*.zip >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              
+              echo "count=$FILE_COUNT" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ No packages found" >> $GITHUB_STEP_SUMMARY
+              echo "count=0" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "❌ Output directory not found" >> $GITHUB_STEP_SUMMARY
+            echo "count=0" >> $GITHUB_OUTPUT
+          fi
+
+      # ========================================
+      # Upload Artifacts
+      # ========================================
+
+      - name: Upload Lambda artifacts
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.output-directory }}/*.zip
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Lambda functions:** ${{ steps.parse-lambdas.outputs.lambda_names }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Node.js version:** ${{ inputs.node-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Packages created:** ${{ steps.package.outputs.package_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifact name:** ${{ inputs.artifact-name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Upload status:** ${{ steps.upload.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY

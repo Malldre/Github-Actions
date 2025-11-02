@@ -131,9 +131,41 @@ with:
 
 _Requires `DATABASE_URL` secret_
 
-### 🔍 Code Quality
+### � Lambda Functions
 
-**6. Code Quality Check** (`code-quality.yml`) - ESLint, Prettier, tests, security scan
+**6. Build Lambda Functions** (`build-lambdas.yml`) - Versatile workflow for building and packaging Lambda functions
+
+```yaml
+# Auto-detect: Build ALL lambdas in directory (SIMPLEST!)
+uses: Malldre/Github-Actions/.github/workflows/build-lambdas.yml@main
+with:
+  lambdas-directory: 'lambdas'  # Automatically detects all lambdas
+
+# Manual: Specify exact lambdas to build
+uses: Malldre/Github-Actions/.github/workflows/build-lambdas.yml@main
+with:
+  lambda-names: 'get_schema,list_schema,upload_schema'
+  lambdas-directory: 'lambdas'
+  node-version: '20'
+  artifact-name: 'lambda-packages'
+  retention-days: 1
+```
+
+> **📝 Features:**
+>
+> - ✅ **Auto-Detection**: Leave `lambda-names` empty to auto-detect all lambdas with `package.json`
+> - ✅ **Versatile**: Build any number of lambdas dynamically
+> - ✅ **Configurable**: Customize Node.js version, directories, artifact name
+> - ✅ **Smart Loops**: Automatically processes all lambdas in the list
+> - ✅ **Artifact Management**: Upload packages for use in other jobs
+> - ✅ **Detailed Reports**: Complete build summaries with package sizes
+> - ✅ **Error Handling**: Validates directories, files, and builds
+>
+> **📚 [Complete Guide](./BUILD_LAMBDAS_GUIDE.md)** - Examples for all use cases
+
+### �🔍 Code Quality
+
+**7. Code Quality Check** (`code-quality.yml`) - ESLint, Prettier, tests, security scan
 
 ```yaml
 uses: Malldre/Github-Actions/.github/workflows/code-quality.yml@main
@@ -158,7 +190,7 @@ with:
   fail-on-missing: false # true to fail, false to warn
 ```
 
-**9. Terraform Tag Validation** (`terraform-tag-validation.yml`) - Validates tags and generates detailed report
+**9. Terraform Provider Validation** (`terraform-provider-validation.yml`) - Validates AWS provider default_tags
 
 ```yaml
 uses: Malldre/Github-Actions/.github/workflows/terraform-tag-validation.yml@main
