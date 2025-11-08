@@ -149,17 +149,19 @@ with:
   node-version: '20'
   artifact-name: 'lambda-packages'
   retention-days: 1
+  include-node-modules: true     # Include dependencies (default: true)
+  include-package-json: true     # Include package.json (default: true)
 ```
 
 > **📝 Features:**
 >
 > - ✅ **Auto-Detection**: Leave `lambda-names` empty to auto-detect all lambdas with `package.json`
 > - ✅ **Versatile**: Build any number of lambdas dynamically
+> - ✅ **Complete Packages**: Includes build/, node_modules/, package.json, and package-lock.json
 > - ✅ **Configurable**: Customize Node.js version, directories, artifact name
 > - ✅ **Smart Loops**: Automatically processes all lambdas in the list
 > - ✅ **Artifact Management**: Upload packages for use in other jobs
 > - ✅ **Detailed Reports**: Complete build summaries with package sizes
-> - ✅ **Error Handling**: Validates directories, files, and builds
 >
 > **📚 [Complete Guide](./BUILD_LAMBDAS_GUIDE.md)** - Examples for all use cases
 

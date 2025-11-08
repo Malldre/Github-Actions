@@ -43,6 +43,11 @@ on:
         required: false
         type: boolean
         default: true
+      include-package-json:
+        description: "Include package.json and package-lock.json in package"
+        required: false
+        type: boolean
+        default: true
     outputs:
       artifacts-uploaded:
         description: "Indicates if artifacts were successfully uploaded"
@@ -239,6 +244,19 @@ jobs:
             if [ "${{ inputs.include-node-modules }}" == "true" ] && [ -d "node_modules" ]; then
               PACKAGE_ITEMS="$PACKAGE_ITEMS node_modules/"
               echo "  ✓ Including node_modules"
+            fi
+            
+            # Check for package.json and package-lock.json
+            if [ "${{ inputs.include-package-json }}" == "true" ]; then
+              if [ -f "package.json" ]; then
+                PACKAGE_ITEMS="$PACKAGE_ITEMS package.json"
+                echo "  ✓ Including package.json"
+              fi
+              
+              if [ -f "package-lock.json" ]; then
+                PACKAGE_ITEMS="$PACKAGE_ITEMS package-lock.json"
+                echo "  ✓ Including package-lock.json"
+              fi
             fi
             
             # Create ZIP
